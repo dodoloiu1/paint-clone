@@ -1281,6 +1281,7 @@
           <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="Toggle between Nearest-Neighbor crisp pixels vs Bilinear texture filtering">
             <input type="checkbox" id="chkGpuSmooth"> Bilinear Smooth
           </label>
+          <button class="btn" id="btnRibbonForceUpload" style="padding:1px 6px; font-size:10.5px;" title="Force re-upload all GPU tiles from CPU master buffer">Re-upload 🔄</button>
           <button class="btn" id="btnViewGpuSettings" style="padding:1px 6px; font-size:10.5px;">Settings ⚙</button>
         </div>
       </div>
@@ -1665,6 +1666,9 @@
         </div>
 
         <div style="display:flex; gap:8px; margin-top:14px;">
+          <button class="btn" id="btnForceFullUpload" style="flex:1; font-weight:600; padding:8px 10px; background:var(--accent); color:#ffffff; border-color:var(--accent);">
+            🔄 Force full re-upload
+          </button>
           <button class="btn" id="btnRunFillBench" style="flex:1; font-weight:600; padding:8px 10px;">
             ⚡ Run 10kx10k Flood Fill Benchmark
           </button>
@@ -1742,31 +1746,159 @@
     const qaRedoBtn = document.getElementById('qaRedoBtn');
 
     /* ========================================================================
-       WebGL 2D Hardware-Accelerated Rendering Engine & Engine Switcher
+       Color Helper
+       ======================================================================== */
+    function hexToRgba(hex) {
+      if (typeof hex !== 'string') return { r: 0, g: 0, b: 0, a: 255 };
+      let c = hex.replace('#', '');
+      if (c.length === 3) c = c.split('').map(x => x + x).join('');
+      const num = parseInt(c, 16) || 0;
+      return {
+        r: (num >> 16) & 255,
+        g: (num >> 8) & 255,
+        b: num & 255,
+        a: 255
+      };
+    }
+
+    /* ========================================================================
+       CPU Master Pixel Buffer (Single Source of Truth)
+       Uint32Array & ImageData backing all drawing operations & GPU tile textures
+       ======================================================================== */
+    const CPU = {
+      width: 960,
+      height: 540,
+      imageData: null,
+      data8: null,     // Uint8ClampedArray
+      dataU8: null,    // Uint8Array view for WebGL texSubImage2D
+      data32: null,    // Uint32Array view for 32-bit SIMD manipulations
+
+      init(w, h, fillHex = '#ffffff') {
+        this.width = Math.max(1, Math.round(w));
+        this.height = Math.max(1, Math.round(h));
+        this.imageData = new ImageData(this.width, this.height);
+        this.data8 = this.imageData.data;
+        this.dataU8 = new Uint8Array(this.data8.buffer);
+        this.data32 = new Uint32Array(this.data8.buffer);
+        this.fill(fillHex);
+      },
+
+      resize(newW, newH, fillHex = '#ffffff') {
+        newW = Math.max(1, Math.round(newW));
+        newH = Math.max(1, Math.round(newH));
+        const oldW = this.width;
+        const oldH = this.height;
+        const old32 = this.data32;
+
+        this.width = newW;
+        this.height = newH;
+        this.imageData = new ImageData(newW, newH);
+        this.data8 = this.imageData.data;
+        this.dataU8 = new Uint8Array(this.data8.buffer);
+        this.data32 = new Uint32Array(this.data8.buffer);
+        this.fill(fillHex);
+
+        if (old32 && oldW > 0 && oldH > 0) {
+          const copyW = Math.min(oldW, newW);
+          const copyH = Math.min(oldH, newH);
+          for (let y = 0; y < copyH; y++) {
+            const srcOffset = y * oldW;
+            const dstOffset = y * newW;
+            this.data32.set(old32.subarray(srcOffset, srcOffset + copyW), dstOffset);
+          }
+        }
+      },
+
+      fill(fillHex) {
+        const fc = hexToRgba(fillHex);
+        const targetUint = (((fc.a & 0xFF) << 24) | ((fc.b & 0xFF) << 16) | ((fc.g & 0xFF) << 8) | (fc.r & 0xFF)) >>> 0;
+        this.data32.fill(targetUint);
+      },
+
+      setPixel(x, y, colorUint) {
+        if (x >= 0 && x < this.width && y >= 0 && y < this.height) {
+          this.data32[y * this.width + x] = colorUint;
+        }
+      },
+
+      getPixel(x, y) {
+        if (x >= 0 && x < this.width && y >= 0 && y < this.height) {
+          return this.data32[y * this.width + x] >>> 0;
+        }
+        return 0xFFFFFFFF >>> 0;
+      },
+
+      blitPatch(x, y, patch) {
+        if (!patch || !patch.data) return;
+        const pw = patch.width;
+        const ph = patch.height;
+        const patch32 = new Uint32Array(patch.data.buffer);
+        const w = this.width;
+        const h = this.height;
+
+        const x0 = Math.max(0, x);
+        const y0 = Math.max(0, y);
+        const x1 = Math.min(w, x + pw);
+        const y1 = Math.min(h, y + ph);
+        const copyW = x1 - x0;
+        if (copyW <= 0) return;
+
+        for (let py = y0; py < y1; py++) {
+          const srcRow = (py - y) * pw + (x0 - x);
+          const dstRow = py * w + x0;
+          this.data32.set(patch32.subarray(srcRow, srcRow + copyW), dstRow);
+        }
+      },
+
+      getImageData(x, y, w, h) {
+        w = Math.max(1, Math.round(w));
+        h = Math.max(1, Math.round(h));
+        const patch = new ImageData(w, h);
+        const patch32 = new Uint32Array(patch.data.buffer);
+        const cw = this.width;
+        const ch = this.height;
+
+        const x0 = Math.max(0, x);
+        const y0 = Math.max(0, y);
+        const x1 = Math.min(cw, x + w);
+        const y1 = Math.min(ch, y + h);
+
+        for (let py = y0; py < y1; py++) {
+          const srcOffset = py * cw + x0;
+          const dstOffset = (py - y) * w + (x0 - x);
+          const copyLen = x1 - x0;
+          if (copyLen > 0) {
+            patch32.set(this.data32.subarray(srcOffset, srcOffset + copyLen), dstOffset);
+          }
+        }
+        return patch;
+      }
+    };
+
+    /* ========================================================================
+       WebGL 2D Hardware-Accelerated Rendering Engine (Tiled WebGL2 Architecture)
+       Tiles: 2048x2048, texStorage2D once, UNPACK_* texSubImage2D dirty rects
        ======================================================================== */
     const WebGLRenderer = {
       gl: null,
       program: null,
-      texture: null,
-      posBuffer: null,
-      texCoordBuffer: null,
+      unitQuadBuffer: null,
+      unitPosLoc: -1,
       isWebGL2: false,
       mode: 'gpu',         // 'gpu' (WebGL hardware accelerated) | 'cpu' (Canvas 2D software)
       gpuName: 'WebGL GPU',
       vendorName: 'Unknown',
-      glVersion: 'WebGL 1.0',
-      maxTextureSize: 8192,
-      textureCap: 4096,    // Safe cap for huge canvases (e.g. 10000x10000)
-      activeTexWidth: 0,
-      activeTexHeight: 0,
+      glVersion: 'WebGL 2.0 (ES 3.0)',
+      maxTextureSize: 16384,
+      textureCap: 4096,    // Safe Cap indicator: tile architecture renders 1:1 without downsampling
+      TILE_SIZE: 2048,
+      numCols: 0,
+      numRows: 0,
+      tiles: [],           // Array of { col, row, x, y, w, h, texture }
       filterMode: 0,       // 0=Normal, 1=Invert, 2=Grayscale, 3=Sepia
       smoothFilter: false,
-      lastWidth: 0,
-      lastHeight: 0,
       lastSyncMs: 0,
       lastFillStats: null, // { px, ms, mpxSec, engine }
-      stagingCanvas: null,
-      stagingCtx: null,
       uniforms: {},
 
       init() {
@@ -1787,13 +1919,7 @@
           this.isWebGL2 = true;
           this.glVersion = 'WebGL 2.0 (ES 3.0)';
         } else {
-          gl = glCanvas.getContext('webgl', attrs) || glCanvas.getContext('experimental-webgl', attrs);
-          this.isWebGL2 = false;
-          this.glVersion = 'WebGL 1.0';
-        }
-
-        if (!gl) {
-          console.warn('WebGL not available, defaulting to CPU Canvas 2D mode.');
+          console.warn('WebGL2 not available, falling back to CPU mode.');
           this.mode = 'cpu';
           if (glCanvas) glCanvas.style.display = 'none';
           this.updateTelemetryUI();
@@ -1818,20 +1944,30 @@
         if (maxTex) this.maxTextureSize = maxTex;
 
         const vsSource = `
-          attribute vec2 a_position;
-          attribute vec2 a_texCoord;
+          attribute vec2 a_unitPos;
+          uniform vec2 u_tileOffset;
+          uniform vec2 u_tileSize;
+          uniform vec2 u_canvasSize;
           varying vec2 v_texCoord;
+          varying vec2 v_canvasPos;
+
           void main() {
-            gl_Position = vec4(a_position, 0.0, 1.0);
-            v_texCoord = a_texCoord;
+            vec2 canvasPos = u_tileOffset + a_unitPos * u_tileSize;
+            vec2 clipSpace = vec2(
+              (canvasPos.x / u_canvasSize.x) * 2.0 - 1.0,
+              1.0 - (canvasPos.y / u_canvasSize.y) * 2.0
+            );
+            gl_Position = vec4(clipSpace, 0.0, 1.0);
+            v_texCoord = a_unitPos;
+            v_canvasPos = canvasPos;
           }
         `;
 
         const fsSource = `
           precision highp float;
           varying vec2 v_texCoord;
+          varying vec2 v_canvasPos;
           uniform sampler2D u_image;
-          uniform vec2 u_canvasSize;
           uniform float u_zoom;
           uniform float u_showGrid;
           uniform vec4 u_gridColor;
@@ -1853,17 +1989,17 @@
               color.rgb = clamp(vec3(r, g, b), 0.0, 1.0);
             }
 
-            // Hardware-accelerated GPU Pixel Grid
+            // Hardware-accelerated GPU Pixel Grid (calculated seamlessly in canvas coordinates)
             if (u_showGrid > 0.5) {
               if (u_zoom >= 2.0) {
-                vec2 pixelPos = v_texCoord * u_canvasSize;
+                vec2 pixelPos = v_canvasPos;
                 vec2 frac = fract(pixelPos);
                 vec2 screenPx = frac * u_zoom;
                 if (screenPx.x < 1.0 || screenPx.y < 1.0) {
                   color.rgb = mix(color.rgb, u_gridColor.rgb, u_gridColor.a);
                 }
               } else {
-                vec2 pixelPos = (v_texCoord * u_canvasSize) / 16.0;
+                vec2 pixelPos = v_canvasPos / 16.0;
                 vec2 frac = fract(pixelPos);
                 vec2 screenPx = frac * 16.0 * u_zoom;
                 if (screenPx.x < 1.0 || screenPx.y < 1.0) {
@@ -1881,37 +2017,24 @@
         this.program = this.createProgram(vs, fs);
         gl.useProgram(this.program);
 
-        const posLoc = gl.getAttribLocation(this.program, 'a_position');
-        const texLoc = gl.getAttribLocation(this.program, 'a_texCoord');
+        this.unitPosLoc = gl.getAttribLocation(this.program, 'a_unitPos');
 
-        this.posBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuffer);
+        // Unit quad buffer: two triangles covering [0,0] to [1,1]
+        this.unitQuadBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.unitQuadBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-          -1, -1,
-           1, -1,
-          -1,  1,
-          -1,  1,
-           1, -1,
-           1,  1
-        ]), gl.STATIC_DRAW);
-        gl.enableVertexAttribArray(posLoc);
-        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-
-        this.texCoordBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+          0, 0,
+          1, 0,
           0, 1,
-          1, 1,
-          0, 0,
-          0, 0,
-          1, 1,
-          1, 0
+          0, 1,
+          1, 0,
+          1, 1
         ]), gl.STATIC_DRAW);
-        gl.enableVertexAttribArray(texLoc);
-        gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 0, 0);
 
         this.uniforms = {
           u_image: gl.getUniformLocation(this.program, 'u_image'),
+          u_tileOffset: gl.getUniformLocation(this.program, 'u_tileOffset'),
+          u_tileSize: gl.getUniformLocation(this.program, 'u_tileSize'),
           u_canvasSize: gl.getUniformLocation(this.program, 'u_canvasSize'),
           u_zoom: gl.getUniformLocation(this.program, 'u_zoom'),
           u_showGrid: gl.getUniformLocation(this.program, 'u_showGrid'),
@@ -1919,19 +2042,8 @@
           u_filterMode: gl.getUniformLocation(this.program, 'u_filterMode')
         };
 
-        this.texture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        this.updateFiltering();
-
-        // Create staging canvas for large texture downsampling
-        this.stagingCanvas = document.createElement('canvas');
-        this.stagingCtx = this.stagingCanvas.getContext('2d', { willReadFrequently: true });
-        this.stagingCtx.imageSmoothingEnabled = false;
-
         this.bindEvents();
-        this.sync(true);
+        this.rebuildTiles();
         this.updateTelemetryUI();
         return true;
       },
@@ -1999,6 +2111,16 @@
           });
         }
 
+        // Force full re-upload buttons
+        const btnForceUpload = document.getElementById('btnForceFullUpload');
+        if (btnForceUpload) {
+          btnForceUpload.addEventListener('click', () => this.forceFullReupload());
+        }
+        const btnRibbonForce = document.getElementById('btnRibbonForceUpload');
+        if (btnRibbonForce) {
+          btnRibbonForce.addEventListener('click', () => this.forceFullReupload());
+        }
+
         // Modal Controls
         const cardGpu = document.getElementById('cardModeGpu');
         const cardCpu = document.getElementById('cardModeCpu');
@@ -2009,7 +2131,7 @@
         if (selModalCap) {
           selModalCap.addEventListener('change', (e) => {
             this.textureCap = parseInt(e.target.value, 10) || 4096;
-            this.sync(true);
+            this.uploadDirtyRect(0, 0, CPU.width - 1, CPU.height - 1);
           });
         }
 
@@ -2048,6 +2170,22 @@
           btnBench.addEventListener('click', () => this.run10kBenchmark());
         }
 
+        // Workspace scroll culling
+        const workspace = document.getElementById('workspace');
+        if (workspace) {
+          let scrollRaf = null;
+          workspace.addEventListener('scroll', () => {
+            if (this.mode === 'gpu') {
+              if (!scrollRaf) {
+                scrollRaf = requestAnimationFrame(() => {
+                  scrollRaf = null;
+                  this.render();
+                });
+              }
+            }
+          });
+        }
+
         // Context loss / recovery
         const glCanvas = document.getElementById('glCanvas');
         if (glCanvas) {
@@ -2057,7 +2195,7 @@
           });
           glCanvas.addEventListener('webglcontextrestored', () => {
             this.init();
-            this.sync(true);
+            this.rebuildTiles();
           });
         }
       },
@@ -2071,11 +2209,255 @@
           glCanvas.style.display = (this.mode === 'gpu') ? 'block' : 'none';
         }
 
-        if (this.mode === 'gpu') {
-          this.sync(true);
+        if (this.mode === 'cpu') {
+          // Synchronize master CPU buffer into 2D canvas
+          mainCtx.putImageData(CPU.imageData, 0, 0);
+        } else {
+          this.render();
         }
 
         this.updateTelemetryUI();
+      },
+
+      rebuildTiles() {
+        const gl = this.gl;
+        if (!gl) return;
+
+        // Clean up previous tile textures
+        if (this.tiles && this.tiles.length > 0) {
+          for (const t of this.tiles) {
+            if (t.texture) gl.deleteTexture(t.texture);
+          }
+        }
+        this.tiles = [];
+
+        const glCanvas = document.getElementById('glCanvas');
+        const w = CPU.width;
+        const h = CPU.height;
+
+        if (glCanvas.width !== w || glCanvas.height !== h) {
+          glCanvas.width = w;
+          glCanvas.height = h;
+        }
+
+        this.TILE_SIZE = 2048;
+        this.numCols = Math.ceil(w / this.TILE_SIZE);
+        this.numRows = Math.ceil(h / this.TILE_SIZE);
+
+        for (let r = 0; r < this.numRows; r++) {
+          for (let c = 0; c < this.numCols; c++) {
+            const tileX = c * this.TILE_SIZE;
+            const tileY = r * this.TILE_SIZE;
+            const tileW = Math.min(this.TILE_SIZE, w - tileX);
+            const tileH = Math.min(this.TILE_SIZE, h - tileY);
+
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            const filter = this.smoothFilter ? gl.LINEAR : gl.NEAREST;
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+
+            // Allocate immutable 2D storage once per tile
+            gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, tileW, tileH);
+            const err = gl.getError();
+            if (err !== 0 && err !== gl.NO_ERROR) {
+              console.error(`[WebGL Error] texStorage2D failed for tile (${c}, ${r}) [size ${tileW}x${tileH}]: 0x${err.toString(16)}`);
+            }
+
+            this.tiles.push({
+              col: c,
+              row: r,
+              x: tileX,
+              y: tileY,
+              w: tileW,
+              h: tileH,
+              texture: texture
+            });
+          }
+        }
+
+        // Upload initial contents from master CPU buffer
+        this.uploadDirtyRect(0, 0, w - 1, h - 1);
+        this.updateTelemetryUI();
+      },
+
+      uploadDirtyRect(minX, minY, maxX, maxY) {
+        if (this.mode === 'cpu' || !this.gl || !this.tiles || this.tiles.length === 0) return;
+        const gl = this.gl;
+
+        const w = CPU.width;
+        const h = CPU.height;
+
+        // Clamp dirty rect in canvas coordinates
+        const x0 = Math.max(0, Math.min(minX, maxX));
+        const y0 = Math.max(0, Math.min(minY, maxY));
+        const x1 = Math.min(w - 1, Math.max(minX, maxX));
+        const y1 = Math.min(h - 1, Math.max(minY, maxY));
+
+        if (x1 < x0 || y1 < y0) return;
+
+        const t0 = performance.now();
+
+        const TILE_SIZE = this.TILE_SIZE;
+        const colStart = Math.floor(x0 / TILE_SIZE);
+        const colEnd = Math.floor(x1 / TILE_SIZE);
+        const rowStart = Math.floor(y0 / TILE_SIZE);
+        const rowEnd = Math.floor(y1 / TILE_SIZE);
+
+        for (let row = rowStart; row <= rowEnd; row++) {
+          for (let col = colStart; col <= colEnd; col++) {
+            const tileIndex = row * this.numCols + col;
+            const tile = this.tiles[tileIndex];
+            if (!tile || !tile.texture) continue;
+
+            const interX0 = Math.max(x0, tile.x);
+            const interX1 = Math.min(x1, tile.x + tile.w - 1);
+            const interY0 = Math.max(y0, tile.y);
+            const interY1 = Math.min(y1, tile.y + tile.h - 1);
+
+            const updateW = interX1 - interX0 + 1;
+            const updateH = interY1 - interY0 + 1;
+
+            if (updateW <= 0 || updateH <= 0) continue;
+
+            const dstX = interX0 - tile.x;
+            const dstY = interY0 - tile.y;
+
+            gl.bindTexture(gl.TEXTURE_2D, tile.texture);
+
+            // Set explicit WebGL unpack parameters before upload
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+            gl.pixelStorei(gl.UNPACK_ROW_LENGTH, w);
+            gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, interX0);
+            gl.pixelStorei(gl.UNPACK_SKIP_ROWS, interY0);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+
+            gl.texSubImage2D(
+              gl.TEXTURE_2D,
+              0,
+              dstX,
+              dstY,
+              updateW,
+              updateH,
+              gl.RGBA,
+              gl.UNSIGNED_BYTE,
+              CPU.dataU8
+            );
+
+            // Reset unpack parameters to 0
+            gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+            gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+            gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+
+            // Check gl.getError() after each texSubImage2D and log errors to console
+            const err = gl.getError();
+            if (err !== 0 && err !== gl.NO_ERROR) {
+              console.error(`[WebGL Error] texSubImage2D failed on tile (${col}, ${row}) [0x${err.toString(16)}]: dst(${dstX},${dstY}) size(${updateW}x${updateH}) skip(${interX0},${interY0}) canvas(${w}x${h})`);
+            }
+          }
+        }
+
+        this.lastSyncMs = Math.round((performance.now() - t0) * 10) / 10;
+        this.render();
+      },
+
+      forceFullReupload() {
+        const t0 = performance.now();
+        this.uploadDirtyRect(0, 0, CPU.width - 1, CPU.height - 1);
+        const elapsed = Math.round((performance.now() - t0) * 10) / 10;
+        console.log(`[WebGL] Force full re-upload completed in ${elapsed} ms (${this.tiles.length} tiles).`);
+        this.updateTelemetryUI();
+      },
+
+      render() {
+        if (this.mode === 'cpu') return;
+        const gl = this.gl;
+        const glCanvas = document.getElementById('glCanvas');
+        if (!gl || !glCanvas || !mainCanvas || !this.tiles || this.tiles.length === 0) return;
+
+        const w = CPU.width;
+        const h = CPU.height;
+
+        if (glCanvas.width !== w || glCanvas.height !== h) {
+          glCanvas.width = w;
+          glCanvas.height = h;
+        }
+
+        gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+        gl.useProgram(this.program);
+        gl.disable(gl.BLEND);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.unitQuadBuffer);
+        gl.enableVertexAttribArray(this.unitPosLoc);
+        gl.vertexAttribPointer(this.unitPosLoc, 2, gl.FLOAT, false, 0, 0);
+
+        const chkGrid = document.getElementById('chkGridlines');
+        const chkGpuGrid = document.getElementById('chkGpuGrid');
+        const gpuGridEnabled = chkGpuGrid ? chkGpuGrid.checked : true;
+        const showGrid = ((chkGrid && chkGrid.checked) || (gpuGridEnabled && STATE.zoom >= 4.0)) ? 1.0 : 0.0;
+
+        const isDark = document.body.classList.contains('dark-theme');
+        const gridColor = isDark ? [1.0, 1.0, 1.0, 0.35] : [0.0, 0.0, 0.0, 0.35];
+
+        gl.uniform1i(this.uniforms.u_image, 0);
+        gl.uniform2f(this.uniforms.u_canvasSize, w, h);
+        gl.uniform1f(this.uniforms.u_zoom, STATE.zoom);
+        gl.uniform1f(this.uniforms.u_showGrid, showGrid);
+        gl.uniform4fv(this.uniforms.u_gridColor, gridColor);
+        gl.uniform1i(this.uniforms.u_filterMode, this.filterMode);
+
+        // Viewport Culling: Compute visible area in canvas coordinates
+        let viewX0 = 0, viewY0 = 0, viewX1 = w, viewY1 = h;
+        const ws = document.getElementById('workspace');
+        const cont = document.getElementById('canvasContainer');
+        if (ws && cont) {
+          const wsRect = ws.getBoundingClientRect();
+          const contRect = cont.getBoundingClientRect();
+          if (contRect.width > 0 && contRect.height > 0) {
+            const visLeft = Math.max(0, wsRect.left - contRect.left);
+            const visTop = Math.max(0, wsRect.top - contRect.top);
+            const visRight = Math.min(contRect.width, wsRect.right - contRect.left);
+            const visBottom = Math.min(contRect.height, wsRect.bottom - contRect.top);
+            if (visRight > visLeft && visBottom > visTop) {
+              const margin = Math.ceil(this.TILE_SIZE * STATE.zoom * 0.5);
+              viewX0 = Math.floor(Math.max(0, visLeft - margin) / STATE.zoom);
+              viewY0 = Math.floor(Math.max(0, visTop - margin) / STATE.zoom);
+              viewX1 = Math.ceil(Math.min(contRect.width, visRight + margin) / STATE.zoom);
+              viewY1 = Math.ceil(Math.min(contRect.height, visBottom + margin) / STATE.zoom);
+            }
+          }
+        }
+
+        // Draw only visible tiles (frustum culling, no gl.finish, no readPixels)
+        for (const tile of this.tiles) {
+          if (tile.x + tile.w < viewX0 || tile.x > viewX1 ||
+              tile.y + tile.h < viewY0 || tile.y > viewY1) {
+            continue;
+          }
+
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, tile.texture);
+          gl.uniform2f(this.uniforms.u_tileOffset, tile.x, tile.y);
+          gl.uniform2f(this.uniforms.u_tileSize, tile.w, tile.h);
+
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+      },
+
+      updateFiltering() {
+        const gl = this.gl;
+        if (!gl || !this.tiles) return;
+        const filter = this.smoothFilter ? gl.LINEAR : gl.NEAREST;
+        for (const t of this.tiles) {
+          if (t.texture) {
+            gl.bindTexture(gl.TEXTURE_2D, t.texture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+          }
+        }
       },
 
       updateTelemetryUI() {
@@ -2093,7 +2475,7 @@
         if (pillEl) {
           if (isGpu) {
             pillEl.classList.remove('cpu-mode');
-            pillEl.title = `GPU Mode (${this.isWebGL2 ? 'WebGL 2.0' : 'WebGL 1.0'}) — ${this.gpuName}\nClick for Hardware Settings`;
+            pillEl.title = `GPU Mode (${this.glVersion}) — ${this.gpuName}\n${this.numCols}×${this.numRows} Tiles (2048px Native)\nClick for Hardware Settings`;
           } else {
             pillEl.classList.add('cpu-mode');
             pillEl.title = `CPU Mode (Canvas 2D Software Rasterizer)\nClick for Hardware Settings`;
@@ -2101,7 +2483,7 @@
         }
 
         if (statusEl) {
-          statusEl.textContent = isGpu ? (this.isWebGL2 ? 'GPU: WebGL2' : 'GPU: WebGL1') : 'CPU: 2D';
+          statusEl.textContent = isGpu ? 'GPU: WebGL2 Tiled' : 'CPU: 2D';
         }
 
         if (quickBtn) {
@@ -2110,7 +2492,7 @@
         }
 
         if (ribbonEngineText) {
-          ribbonEngineText.textContent = isGpu ? 'GPU Active' : 'CPU Active';
+          ribbonEngineText.textContent = isGpu ? 'GPU Active (Tiled)' : 'CPU Active';
         }
         if (ribbonIndicator) {
           ribbonIndicator.style.background = isGpu ? '#22c55e' : '#f59e0b';
@@ -2118,7 +2500,7 @@
         }
 
         if (statusEngineText) {
-          statusEngineText.textContent = isGpu ? (this.isWebGL2 ? 'GPU (WebGL2)' : 'GPU (WebGL1)') : 'CPU (Canvas 2D)';
+          statusEngineText.textContent = isGpu ? 'GPU (WebGL2 Tiled)' : 'CPU (Canvas 2D)';
         }
         if (statusIndicator) {
           statusIndicator.style.background = isGpu ? '#22c55e' : '#f59e0b';
@@ -2140,7 +2522,7 @@
 
         const diagEngine = document.getElementById('diagEngine');
         if (diagEngine) {
-          diagEngine.textContent = isGpu ? (this.isWebGL2 ? 'GPU — WebGL 2.0 Hardware Accelerated' : 'GPU — WebGL 1.0 Hardware Accelerated') : 'CPU — Canvas 2D Software Rasterizer';
+          diagEngine.textContent = isGpu ? `GPU — WebGL 2.0 Tiled (${this.numCols} × ${this.numRows} Tiles)` : 'CPU — Canvas 2D Software Rasterizer';
           diagEngine.style.color = isGpu ? '#22c55e' : '#f59e0b';
         }
 
@@ -2153,8 +2535,8 @@
         const diagMaxTex = document.getElementById('diagMaxTex');
         if (diagMaxTex) diagMaxTex.textContent = `${this.maxTextureSize} × ${this.maxTextureSize} px`;
 
-        const w = mainCanvas ? mainCanvas.width : 960;
-        const h = mainCanvas ? mainCanvas.height : 540;
+        const w = CPU.width;
+        const h = CPU.height;
         const mp = ((w * h) / 1000000).toFixed(2);
         const ramMb = ((w * h * 4) / (1024 * 1024)).toFixed(1);
 
@@ -2168,16 +2550,14 @@
         if (diagGpuTexDim) {
           if (!isGpu) {
             diagGpuTexDim.textContent = 'None (CPU Mode Active)';
-          } else if (this.activeTexWidth > 0 && (this.activeTexWidth !== w || this.activeTexHeight !== h)) {
-            diagGpuTexDim.textContent = `${this.activeTexWidth} × ${this.activeTexHeight} px (Downsampled safe VRAM)`;
           } else {
-            diagGpuTexDim.textContent = `${w} × ${h} px (1:1 Native GPU Texture)`;
+            diagGpuTexDim.textContent = `${this.numCols} × ${this.numRows} Tiles (2048 × 2048 px Native, No Downsampling)`;
           }
         }
 
         const diagGpuSync = document.getElementById('diagGpuSync');
         if (diagGpuSync) {
-          diagGpuSync.textContent = isGpu ? `${this.lastSyncMs} ms` : 'Bypassed (0 ms)';
+          diagGpuSync.textContent = isGpu ? `${this.lastSyncMs} ms (Dirty Rect)` : 'Bypassed (0 ms)';
         }
 
         const diagFillPerf = document.getElementById('diagFillPerf');
@@ -2215,115 +2595,18 @@
         return prog;
       },
 
-      updateFiltering() {
-        const gl = this.gl;
-        if (!gl || !this.texture) return;
-        gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        const filter = this.smoothFilter ? gl.LINEAR : gl.NEAREST;
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
-      },
-
       sync(forceFullUpload = false) {
-        if (this.mode === 'cpu') {
-          this.updateTelemetryUI();
-          return;
-        }
-        const gl = this.gl;
-        if (!gl || !mainCanvas) return;
-
-        const t0 = performance.now();
-        gl.bindTexture(gl.TEXTURE_2D, this.texture);
-
-        const w = mainCanvas.width;
-        const h = mainCanvas.height;
-        const cap = Math.min(this.maxTextureSize, this.textureCap);
-
-        let source = mainCanvas;
-        let uploadW = w;
-        let uploadH = h;
-
-        // If canvas exceeds textureCap, downscale through staging canvas
-        if (w > cap || h > cap) {
-          const ratio = Math.min(cap / w, cap / h);
-          uploadW = Math.max(1, Math.round(w * ratio));
-          uploadH = Math.max(1, Math.round(h * ratio));
-
-          if (this.stagingCanvas.width !== uploadW || this.stagingCanvas.height !== uploadH) {
-            this.stagingCanvas.width = uploadW;
-            this.stagingCanvas.height = uploadH;
-            this.stagingCtx.imageSmoothingEnabled = false;
-          }
-          this.stagingCtx.drawImage(mainCanvas, 0, 0, uploadW, uploadH);
-          source = this.stagingCanvas;
-        }
-
-        this.activeTexWidth = uploadW;
-        this.activeTexHeight = uploadH;
-
-        if (forceFullUpload || this.lastWidth !== uploadW || this.lastHeight !== uploadH) {
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-          this.lastWidth = uploadW;
-          this.lastHeight = uploadH;
+        if (forceFullUpload) {
+          this.rebuildTiles();
         } else {
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
+          this.uploadDirtyRect(0, 0, CPU.width - 1, CPU.height - 1);
         }
-
-        this.lastSyncMs = Math.round((performance.now() - t0) * 10) / 10;
-        this.render();
-        this.updateTelemetryUI();
-      },
-
-      render() {
-        if (this.mode === 'cpu') return;
-        const gl = this.gl;
-        const glCanvas = document.getElementById('glCanvas');
-        if (!gl || !glCanvas || !mainCanvas) return;
-
-        // Match glCanvas backbuffer to mainCanvas dimensions up to max render buffer size
-        const maxDim = Math.min(this.maxTextureSize, 8192);
-        const targetW = Math.min(maxDim, mainCanvas.width);
-        const targetH = Math.min(maxDim, mainCanvas.height);
-
-        if (glCanvas.width !== targetW || glCanvas.height !== targetH) {
-          glCanvas.width = targetW;
-          glCanvas.height = targetH;
-        }
-
-        gl.viewport(0, 0, glCanvas.width, glCanvas.height);
-        gl.useProgram(this.program);
-
-        const chkGrid = document.getElementById('chkGridlines');
-        const chkGpuGrid = document.getElementById('chkGpuGrid');
-        const gpuGridEnabled = chkGpuGrid ? chkGpuGrid.checked : true;
-        const showGrid = ((chkGrid && chkGrid.checked) || (gpuGridEnabled && STATE.zoom >= 4.0)) ? 1.0 : 0.0;
-
-        const isDark = document.body.classList.contains('dark-theme');
-        const gridColor = isDark ? [1.0, 1.0, 1.0, 0.35] : [0.0, 0.0, 0.0, 0.35];
-
-        gl.uniform1i(this.uniforms.u_image, 0);
-        gl.uniform2f(this.uniforms.u_canvasSize, mainCanvas.width, mainCanvas.height);
-        gl.uniform1f(this.uniforms.u_zoom, STATE.zoom);
-        gl.uniform1f(this.uniforms.u_showGrid, showGrid);
-        gl.uniform4fv(this.uniforms.u_gridColor, gridColor);
-        gl.uniform1i(this.uniforms.u_filterMode, this.filterMode);
-
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
       },
 
       readPixel(x, y) {
-        if (this.mode === 'cpu' || !this.gl) {
-          return mainCtx.getImageData(x, y, 1, 1).data;
-        }
-        const gl = this.gl;
-        const glCanvas = document.getElementById('glCanvas');
-        if (!gl || !glCanvas) return null;
-        this.render();
-        const glX = Math.min(glCanvas.width - 1, Math.max(0, Math.floor((x / mainCanvas.width) * glCanvas.width)));
-        const glY = Math.min(glCanvas.height - 1, Math.max(0, Math.floor(((mainCanvas.height - 1 - y) / mainCanvas.height) * glCanvas.height)));
-        const pixel = new Uint8Array(4);
-        gl.readPixels(glX, glY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-        return pixel;
+        // Read directly from CPU master buffer with zero GPU stalling
+        const uint = CPU.getPixel(x, y);
+        return new Uint8Array([uint & 0xFF, (uint >> 8) & 0xFF, (uint >> 16) & 0xFF, (uint >> 24) & 0xFF]);
       },
 
       run10kBenchmark() {
@@ -2446,6 +2729,9 @@
         paletteGrid.appendChild(swatch);
       });
 
+      // Clear CPU master buffer with White
+      CPU.init(mainCanvas.width, mainCanvas.height, '#ffffff');
+
       // Clear main canvas with White
       mainCtx.imageSmoothingEnabled = false;
       overlayCtx.imageSmoothingEnabled = false;
@@ -2563,7 +2849,7 @@
       mainCtx.imageSmoothingEnabled = false;
       overlayCtx.imageSmoothingEnabled = false;
 
-      WebGLRenderer.sync(true);
+      WebGLRenderer.rebuildTiles();
       WebGLRenderer.updateTelemetryUI();
     }
 
@@ -2576,15 +2862,18 @@
         STATE.history = STATE.history.slice(0, STATE.historyIndex + 1);
       }
 
-      const imgData = existingImgData || mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
+      const w = CPU.width;
+      const h = CPU.height;
+      const copy32 = new Uint32Array(CPU.data32);
+
       STATE.history.push({
-        width: mainCanvas.width,
-        height: mainCanvas.height,
-        data: imgData
+        width: w,
+        height: h,
+        data: copy32
       });
 
       // Adaptive history length to prevent RAM exhaustion on large canvases (e.g. 10000x10000 = 400MB/snap)
-      const bytesPerSnap = mainCanvas.width * mainCanvas.height * 4;
+      const bytesPerSnap = w * h * 4;
       const maxAllowed = Math.max(2, Math.min(STATE.maxHistory, Math.floor((600 * 1024 * 1024) / Math.max(1, bytesPerSnap))));
 
       while (STATE.history.length > maxAllowed) {
@@ -2594,7 +2883,6 @@
 
       updateUndoRedoUI();
       STATE.isModified = true;
-      WebGLRenderer.sync();
     }
 
     function undo() {
@@ -2628,10 +2916,16 @@
       if (mainCanvas.width !== snap.width || mainCanvas.height !== snap.height) {
         mainCanvas.width = snap.width;
         mainCanvas.height = snap.height;
+        overlayCanvas.width = snap.width;
+        overlayCanvas.height = snap.height;
+        CPU.resize(snap.width, snap.height);
         updateCanvasSizeUI();
       }
-      mainCtx.putImageData(snap.data, 0, 0);
-      WebGLRenderer.sync(true);
+      CPU.data32.set(snap.data);
+      if (WebGLRenderer.mode === 'cpu') {
+        mainCtx.putImageData(CPU.imageData, 0, 0);
+      }
+      WebGLRenderer.uploadDirtyRect(0, 0, CPU.width - 1, CPU.height - 1);
     }
 
     function updateUndoRedoUI() {
@@ -2640,14 +2934,36 @@
     }
 
     /* ========================================================================
-       Pixel Rendering & Bresenham Line Algorithm
+       Pixel Rendering & Bresenham Line Algorithm (Fast CPU Uint32Array)
+       Writes directly to master CPU buffer and uploads dirty rect to GPU tiles
        ======================================================================== */
     function drawPixelLine(ctx, x0, y0, x1, y1, color, size = 1) {
-      ctx.fillStyle = color;
+      if (typeof ctx === 'number') {
+        size = color;
+        color = y1;
+        y1 = x1;
+        x1 = y0;
+        y0 = x0;
+        x0 = ctx;
+        ctx = mainCtx;
+      }
       x0 = Math.round(x0);
       y0 = Math.round(y0);
       x1 = Math.round(x1);
       y1 = Math.round(y1);
+
+      const w = CPU.width;
+      const h = CPU.height;
+      const data = CPU.data32;
+
+      const fc = (typeof color === 'string') ? hexToRgba(color) : color;
+      const colorUint = (((fc.a & 0xFF) << 24) | ((fc.b & 0xFF) << 16) | ((fc.g & 0xFF) << 8) | (fc.r & 0xFF)) >>> 0;
+
+      const half = Math.floor(size / 2);
+      const minX = Math.max(0, Math.min(x0, x1) - half);
+      const minY = Math.max(0, Math.min(y0, y1) - half);
+      const maxX = Math.min(w - 1, Math.max(x0, x1) + (size - 1 - half));
+      const maxY = Math.min(h - 1, Math.max(y0, y1) + (size - 1 - half));
 
       const dx = Math.abs(x1 - x0);
       const dy = Math.abs(y1 - y0);
@@ -2655,13 +2971,21 @@
       const sy = (y0 < y1) ? 1 : -1;
       let err = dx - dy;
 
-      const half = Math.floor(size / 2);
-
       while (true) {
         if (size <= 1) {
-          ctx.fillRect(x0, y0, 1, 1);
+          if (x0 >= 0 && x0 < w && y0 >= 0 && y0 < h) {
+            data[y0 * w + x0] = colorUint;
+          }
         } else {
-          ctx.fillRect(x0 - half, y0 - half, size, size);
+          const rx0 = Math.max(0, x0 - half);
+          const ry0 = Math.max(0, y0 - half);
+          const rx1 = Math.min(w, x0 - half + size);
+          const ry1 = Math.min(h, y0 - half + size);
+          if (rx1 > rx0 && ry1 > ry0) {
+            for (let py = ry0; py < ry1; py++) {
+              data.fill(colorUint, py * w + rx0, py * w + rx1);
+            }
+          }
         }
 
         if (x0 === x1 && y0 === y1) break;
@@ -2675,9 +2999,16 @@
           y0 += sy;
         }
       }
-      if (ctx === mainCtx) {
-        WebGLRenderer.sync();
+
+      if (WebGLRenderer.mode === 'cpu') {
+        const dirtyW = maxX - minX + 1;
+        const dirtyH = maxY - minY + 1;
+        if (dirtyW > 0 && dirtyH > 0) {
+          mainCtx.putImageData(CPU.imageData, 0, 0, minX, minY, dirtyW, dirtyH);
+        }
       }
+
+      WebGLRenderer.uploadDirtyRect(minX, minY, maxX, maxY);
     }
 
     /* ========================================================================
@@ -2841,9 +3172,9 @@
           break;
 
         case 'fill':
-          const filledData = floodFill(coords.x, coords.y, drawColor);
-          if (filledData) {
-            saveSnapshot(filledData);
+          const filled = floodFill(coords.x, coords.y, drawColor);
+          if (filled) {
+            saveSnapshot();
           }
           STATE.isDrawing = false;
           break;
@@ -3180,7 +3511,7 @@
           if (w > 2 && h > 2) {
             STATE.selection = {
               x, y, w, h,
-              imgData: mainCtx.getImageData(x, y, w, h),
+              imgData: CPU.getImageData(x, y, w, h),
               floating: false
             };
             renderSelectionOverlay();
@@ -3206,13 +3537,12 @@
        Zero visited array allocation, unsigned 32-bit SIMD fill, handles 10kx10k
        ======================================================================== */
     function floodFill(startX, startY, fillHex) {
-      const w = mainCanvas.width;
-      const h = mainCanvas.height;
+      const w = CPU.width;
+      const h = CPU.height;
       if (startX < 0 || startX >= w || startY < 0 || startY >= h) return null;
 
       const t0 = performance.now();
-      const imgData = mainCtx.getImageData(0, 0, w, h);
-      const data = new Uint32Array(imgData.data.buffer);
+      const data = CPU.data32;
 
       // Parse target fill color into 32-bit uint (ABGR format on little-endian)
       const fc = hexToRgba(fillHex);
@@ -3222,6 +3552,12 @@
       const matchUint = data[startIdx] >>> 0;
 
       if (matchUint === targetUint) return null;
+
+      // Track bounding box of filled area for dirty rect upload
+      let minX = startX;
+      let maxX = startX;
+      let minY = startY;
+      let maxY = startY;
 
       // Directional Shadow-Span Scanline Stack (xl, xr, y, dy)
       // Pre-allocated typed array grows dynamically if needed, avoiding GC churn and RangeError
@@ -3277,6 +3613,11 @@
         // Fill horizontal segment at native memory speed
         data.fill(targetUint, rowOffset + l, rowOffset + r);
         filledPixels += (r - l);
+
+        if (l < minX) minX = l;
+        if (r - 1 > maxX) maxX = r - 1;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
 
         // Push spans in the forward direction (dy)
         const nextY = y + dy;
@@ -3392,7 +3733,16 @@
         }
       }
 
-      mainCtx.putImageData(imgData, 0, 0);
+      if (WebGLRenderer.mode === 'cpu') {
+        const dirtyW = maxX - minX + 1;
+        const dirtyH = maxY - minY + 1;
+        if (dirtyW > 0 && dirtyH > 0) {
+          mainCtx.putImageData(CPU.imageData, 0, 0, minX, minY, dirtyW, dirtyH);
+        }
+      }
+
+      // Mark dirty after fill (bounding box of filled area)
+      WebGLRenderer.uploadDirtyRect(minX, minY, maxX, maxY);
 
       const elapsed = Math.round((performance.now() - t0) * 10) / 10;
       const mpxSec = (elapsed > 0) ? Math.round((filledPixels / 1000000 / (elapsed / 1000)) * 10) / 10 : 0;
@@ -3402,32 +3752,16 @@
         mpxSec: mpxSec,
         engine: WebGLRenderer.mode.toUpperCase()
       };
-      WebGLRenderer.sync();
       WebGLRenderer.updateTelemetryUI();
 
-      return imgData;
-    }
-
-    function hexToRgba(hex) {
-      let c = hex.replace('#', '');
-      if (c.length === 3) c = c.split('').map(x => x + x).join('');
-      const num = parseInt(c, 16);
-      return {
-        r: (num >> 16) & 255,
-        g: (num >> 8) & 255,
-        b: num & 255,
-        a: 255
-      };
+      return true;
     }
 
     /* ========================================================================
        Color Picker (Eyedropper)
        ======================================================================== */
     function pickColor(x, y, isRightClick) {
-      let pixel = WebGLRenderer.readPixel(x, y);
-      if (!pixel) {
-        pixel = mainCtx.getImageData(x, y, 1, 1).data;
-      }
+      const pixel = WebGLRenderer.readPixel(x, y);
       const hex = '#' + [pixel[0], pixel[1], pixel[2]].map(c => c.toString(16).padStart(2, '0')).join('');
 
       if (isRightClick) {
@@ -3446,6 +3780,12 @@
     function drawBrushStroke(x0, y0, x1, y1, color) {
       const dist = Math.hypot(x1 - x0, y1 - y0);
       const steps = Math.max(1, Math.ceil(dist / 2));
+
+      const pad = Math.ceil(STATE.strokeSize * 4 + 6);
+      const minX = Math.max(0, Math.floor(Math.min(x0, x1) - pad));
+      const minY = Math.max(0, Math.floor(Math.min(y0, y1) - pad));
+      const maxX = Math.min(CPU.width - 1, Math.ceil(Math.max(x0, x1) + pad));
+      const maxY = Math.min(CPU.height - 1, Math.ceil(Math.max(y0, y1) + pad));
 
       mainCtx.fillStyle = color;
       mainCtx.strokeStyle = color;
@@ -3529,7 +3869,14 @@
             break;
         }
       }
-      WebGLRenderer.sync();
+
+      const dirtyW = maxX - minX + 1;
+      const dirtyH = maxY - minY + 1;
+      if (dirtyW > 0 && dirtyH > 0) {
+        const patch = mainCtx.getImageData(minX, minY, dirtyW, dirtyH);
+        CPU.blitPatch(minX, minY, patch);
+        WebGLRenderer.uploadDirtyRect(minX, minY, maxX, maxY);
+      }
     }
 
     /* ========================================================================
@@ -3735,6 +4082,12 @@
       const dx = s.x1 - s.x0;
       const dy = s.y1 - s.y0;
       if (Math.hypot(dx, dy) >= 2 || s.type !== 'line') {
+        const pad = Math.ceil((s.strokeSize || 2) + 12);
+        const minX = Math.max(0, Math.floor(Math.min(s.x0, s.x1, (s.cp1 ? s.cp1.x : s.x0), (s.cp2 ? s.cp2.x : s.x1)) - pad));
+        const minY = Math.max(0, Math.floor(Math.min(s.y0, s.y1, (s.cp1 ? s.cp1.y : s.y0), (s.cp2 ? s.cp2.y : s.y1)) - pad));
+        const maxX = Math.min(CPU.width - 1, Math.ceil(Math.max(s.x0, s.x1, (s.cp1 ? s.cp1.x : s.x0), (s.cp2 ? s.cp2.x : s.x1)) + pad));
+        const maxY = Math.min(CPU.height - 1, Math.ceil(Math.max(s.y0, s.y1, (s.cp1 ? s.cp1.y : s.y0), (s.cp2 ? s.cp2.y : s.y1)) + pad));
+
         drawShape(
           mainCtx,
           s.type,
@@ -3751,6 +4104,15 @@
           s.cp1,
           s.cp2
         );
+
+        const dirtyW = maxX - minX + 1;
+        const dirtyH = maxY - minY + 1;
+        if (dirtyW > 0 && dirtyH > 0) {
+          const patch = mainCtx.getImageData(minX, minY, dirtyW, dirtyH);
+          CPU.blitPatch(minX, minY, patch);
+          WebGLRenderer.uploadDirtyRect(minX, minY, maxX, maxY);
+        }
+
         saveSnapshot();
       }
       activeShape = null;
@@ -3764,7 +4126,21 @@
     }
 
     function commitShape(x0, y0, x1, y1, lockAspect) {
+      const pad = Math.ceil(STATE.strokeSize + 12);
+      const minX = Math.max(0, Math.floor(Math.min(x0, x1) - pad));
+      const minY = Math.max(0, Math.floor(Math.min(y0, y1) - pad));
+      const maxX = Math.min(CPU.width - 1, Math.ceil(Math.max(x0, x1) + pad));
+      const maxY = Math.min(CPU.height - 1, Math.ceil(Math.max(y0, y1) + pad));
+
       drawShape(mainCtx, STATE.shape, x0, y0, x1, y1, lockAspect, STATE.outlineMode, STATE.fillMode, STATE.color1, STATE.color2, STATE.strokeSize);
+
+      const dirtyW = maxX - minX + 1;
+      const dirtyH = maxY - minY + 1;
+      if (dirtyW > 0 && dirtyH > 0) {
+        const patch = mainCtx.getImageData(minX, minY, dirtyW, dirtyH);
+        CPU.blitPatch(minX, minY, patch);
+        WebGLRenderer.uploadDirtyRect(minX, minY, maxX, maxY);
+      }
     }
 
     function drawShape(ctx, shape, x0, y0, x1, y1, lockAspect, outlineMode, fillMode, strokeColor, fillColor, strokeWidth, cp1, cp2) {
@@ -4008,7 +4384,10 @@
 
     function commitSelection() {
       if (STATE.selection && STATE.selection.floating && STATE.selection.imgData) {
-        mainCtx.putImageData(STATE.selection.imgData, STATE.selection.x, STATE.selection.y);
+        const s = STATE.selection;
+        mainCtx.putImageData(s.imgData, s.x, s.y);
+        CPU.blitPatch(s.x, s.y, s.imgData);
+        WebGLRenderer.uploadDirtyRect(s.x, s.y, s.x + s.w - 1, s.y + s.h - 1);
         saveSnapshot();
       }
       STATE.selection = null;
@@ -4024,19 +4403,26 @@
       if (!STATE.selection || STATE.selection.floating) return;
       const s = STATE.selection;
       s.floating = true;
-      s.imgData = mainCtx.getImageData(s.x, s.y, s.w, s.h);
+      s.imgData = CPU.getImageData(s.x, s.y, s.w, s.h);
 
       // Erase original area with Color 2
       mainCtx.fillStyle = STATE.color2;
       mainCtx.fillRect(s.x, s.y, s.w, s.h);
-      WebGLRenderer.sync();
+
+      const patch = mainCtx.getImageData(s.x, s.y, s.w, s.h);
+      CPU.blitPatch(s.x, s.y, patch);
+      WebGLRenderer.uploadDirtyRect(s.x, s.y, s.x + s.w - 1, s.y + s.h - 1);
     }
 
     function deleteSelection() {
       if (STATE.selection) {
-        if (!STATE.selection.floating) {
+        const s = STATE.selection;
+        if (!s.floating) {
           mainCtx.fillStyle = STATE.color2;
-          mainCtx.fillRect(STATE.selection.x, STATE.selection.y, STATE.selection.w, STATE.selection.h);
+          mainCtx.fillRect(s.x, s.y, s.w, s.h);
+          const patch = mainCtx.getImageData(s.x, s.y, s.w, s.h);
+          CPU.blitPatch(s.x, s.y, patch);
+          WebGLRenderer.uploadDirtyRect(s.x, s.y, s.x + s.w - 1, s.y + s.h - 1);
         }
         STATE.selection = null;
         clearOverlay();
@@ -4075,11 +4461,31 @@
           mainCtx.textBaseline = 'top';
 
           const lines = text.split('\n');
+          let maxLineW = 0;
+          lines.forEach(line => {
+            const m = mainCtx.measureText(line);
+            if (m.width > maxLineW) maxLineW = m.width;
+          });
+
           lines.forEach((line, i) => {
             mainCtx.fillText(line, x + 4, y + 4 + i * (fontSize * 1.25));
           });
-
           mainCtx.restore();
+
+          const totalH = lines.length * (fontSize * 1.25) + 16;
+          const minX = Math.max(0, Math.floor(x));
+          const minY = Math.max(0, Math.floor(y));
+          const maxX = Math.min(CPU.width - 1, Math.ceil(x + maxLineW + 16));
+          const maxY = Math.min(CPU.height - 1, Math.ceil(y + totalH));
+          const dirtyW = maxX - minX + 1;
+          const dirtyH = maxY - minY + 1;
+
+          if (dirtyW > 0 && dirtyH > 0) {
+            const patch = mainCtx.getImageData(minX, minY, dirtyW, dirtyH);
+            CPU.blitPatch(minX, minY, patch);
+            WebGLRenderer.uploadDirtyRect(minX, minY, maxX, maxY);
+          }
+
           saveSnapshot();
         }
 
@@ -4112,6 +4518,10 @@
       mainCtx.drawImage(tempCanvas, -oldW / 2, -oldH / 2);
       mainCtx.restore();
 
+      CPU.resize(mainCanvas.width, mainCanvas.height);
+      const imgData = mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
+      CPU.blitPatch(0, 0, imgData);
+
       updateCanvasSizeUI();
       saveSnapshot();
     }
@@ -4135,20 +4545,30 @@
       mainCtx.drawImage(tempCanvas, 0, 0);
       mainCtx.restore();
 
+      const imgData = mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
+      CPU.blitPatch(0, 0, imgData);
+
+      WebGLRenderer.uploadDirtyRect(0, 0, CPU.width - 1, CPU.height - 1);
       saveSnapshot();
     }
 
     function invertColors() {
       commitActiveShape();
       commitSelection();
-      const imgData = mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
-      const d = imgData.data;
-      for (let i = 0; i < d.length; i += 4) {
-        d[i] = 255 - d[i];       // R
-        d[i + 1] = 255 - d[i + 1]; // G
-        d[i + 2] = 255 - d[i + 2]; // B
+      const d = CPU.data32;
+      const len = d.length;
+      for (let i = 0; i < len; i++) {
+        const u = d[i];
+        const r = 255 - (u & 0xFF);
+        const g = 255 - ((u >> 8) & 0xFF);
+        const b = 255 - ((u >> 16) & 0xFF);
+        const a = (u >> 24) & 0xFF;
+        d[i] = ((a << 24) | (b << 16) | (g << 8) | r) >>> 0;
       }
-      mainCtx.putImageData(imgData, 0, 0);
+      if (WebGLRenderer.mode === 'cpu') {
+        mainCtx.putImageData(CPU.imageData, 0, 0);
+      }
+      WebGLRenderer.uploadDirtyRect(0, 0, CPU.width - 1, CPU.height - 1);
       saveSnapshot();
     }
 
@@ -4160,9 +4580,12 @@
 
         mainCanvas.width = s.w;
         mainCanvas.height = s.h;
+        CPU.resize(s.w, s.h);
+        CPU.blitPatch(0, 0, cropData);
+        mainCtx.putImageData(cropData, 0, 0);
+
         updateCanvasSizeUI();
 
-        mainCtx.putImageData(cropData, 0, 0);
         STATE.selection = null;
         clearOverlay();
         saveSnapshot();
@@ -4175,30 +4598,18 @@
       newW = Math.max(1, Math.round(newW));
       newH = Math.max(1, Math.round(newH));
 
-      const oldW = mainCanvas.width;
-      const oldH = mainCanvas.height;
-      const copyW = Math.min(oldW, newW);
-      const copyH = Math.min(oldH, newH);
-
-      // Copy previous contents directly via ImageData to avoid allocating an extra GPU-backed temporary <canvas>
-      let prevData = null;
-      if (copyW > 0 && copyH > 0) {
-        try {
-          prevData = mainCtx.getImageData(0, 0, copyW, copyH);
-        } catch(e) {
-          console.warn('Could not read existing canvas for resize:', e);
-        }
-      }
-
       mainCanvas.width = newW;
       mainCanvas.height = newH;
-      updateCanvasSizeUI();
+      overlayCanvas.width = newW;
+      overlayCanvas.height = newH;
 
-      mainCtx.fillStyle = STATE.color2;
-      mainCtx.fillRect(0, 0, newW, newH);
-      if (prevData) {
-        mainCtx.putImageData(prevData, 0, 0);
+      CPU.resize(newW, newH, STATE.color2);
+
+      if (WebGLRenderer.mode === 'cpu') {
+        mainCtx.putImageData(CPU.imageData, 0, 0);
       }
+
+      updateCanvasSizeUI();
       saveSnapshot();
       WebGLRenderer.updateTelemetryUI();
     }
@@ -4209,6 +4620,9 @@
     function saveFile(format = 'png') {
       commitActiveShape();
       commitSelection();
+      // Synchronize CPU master buffer into mainCtx before file encoding
+      mainCtx.putImageData(CPU.imageData, 0, 0);
+
       const link = document.createElement('a');
 
       if (format === 'png') {
@@ -4227,9 +4641,9 @@
     }
 
     function exportBMP() {
-      const w = mainCanvas.width;
-      const h = mainCanvas.height;
-      const imgData = mainCtx.getImageData(0, 0, w, h);
+      const w = CPU.width;
+      const h = CPU.height;
+      const d = CPU.data32;
       const rowSize = Math.floor((24 * w + 31) / 32) * 4;
       const pixelArraySize = rowSize * h;
       const fileSize = 54 + pixelArraySize;
@@ -4257,16 +4671,18 @@
       view.setUint32(50, 0, true);
 
       // Pixel Data (BGR, bottom to top)
+      const bytes = new Uint8Array(buffer);
       let offset = 54;
       for (let y = h - 1; y >= 0; y--) {
+        const rowStart = y * w;
         for (let x = 0; x < w; x++) {
-          const idx = (y * w + x) * 4;
-          view.setUint8(offset++, imgData.data[idx + 2]); // B
-          view.setUint8(offset++, imgData.data[idx + 1]); // G
-          view.setUint8(offset++, imgData.data[idx]);     // R
+          const u = d[rowStart + x];
+          bytes[offset++] = (u >> 16) & 0xFF; // Blue
+          bytes[offset++] = (u >> 8) & 0xFF;  // Green
+          bytes[offset++] = u & 0xFF;         // Red
         }
         for (let pad = 0; pad < rowSize - w * 3; pad++) {
-          view.setUint8(offset++, 0);
+          bytes[offset++] = 0;
         }
       }
 
@@ -4282,8 +4698,15 @@
         img.onload = () => {
           mainCanvas.width = img.width;
           mainCanvas.height = img.height;
-          updateCanvasSizeUI();
+          overlayCanvas.width = img.width;
+          overlayCanvas.height = img.height;
           mainCtx.drawImage(img, 0, 0);
+
+          CPU.resize(img.width, img.height);
+          const imgData = mainCtx.getImageData(0, 0, img.width, img.height);
+          CPU.blitPatch(0, 0, imgData);
+
+          updateCanvasSizeUI();
           saveSnapshot();
           document.getElementById('windowTitle').textContent = `${file.name} - Paint`;
         };
@@ -4481,7 +4904,7 @@
       });
       document.getElementById('btnCopy').addEventListener('click', () => {
         if (STATE.selection) {
-          STATE.clipboard = STATE.selection.floating ? STATE.selection.imgData : mainCtx.getImageData(STATE.selection.x, STATE.selection.y, STATE.selection.w, STATE.selection.h);
+          STATE.clipboard = STATE.selection.floating ? STATE.selection.imgData : CPU.getImageData(STATE.selection.x, STATE.selection.y, STATE.selection.w, STATE.selection.h);
         }
       });
       document.getElementById('btnPaste').addEventListener('click', () => {
@@ -4847,13 +5270,13 @@
               STATE.selection = {
                 x: 0,
                 y: 0,
-                w: mainCanvas.width,
-                h: mainCanvas.height,
-                imgData: mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height),
+                w: CPU.width,
+                h: CPU.height,
+                imgData: CPU.getImageData(0, 0, CPU.width, CPU.height),
                 floating: false
               };
               renderSelectionOverlay();
-              selectionText.textContent = `${mainCanvas.width} × ${mainCanvas.height} px`;
+              selectionText.textContent = `${CPU.width} × ${CPU.height} px`;
               break;
             case 'c':
               e.preventDefault();
