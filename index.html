@@ -1476,6 +1476,7 @@
       setupModalEvents();
       setupKeyboardShortcuts();
       setupWindowEvents();
+      setupNativeBridge();
     }
 
     /* ========================================================================
@@ -3016,27 +3017,58 @@
     /* ========================================================================
        File Operations (Save PNG, JPEG, BMP, Open, New)
        ======================================================================== */
-    function saveFile(format = 'png') {
+    let currentFileName = 'Untitled';
+
+    function updateWindowTitle(fileName) {
+      const title = `${fileName || 'Untitled'} - Paint`;
+      document.getElementById('windowTitle').textContent = title;
+      if (window.nativeAPI && window.nativeAPI.setWindowTitle) {
+        window.nativeAPI.setWindowTitle(title);
+      }
+    }
+
+    async function saveFile(format = 'png') {
       commitActiveShape();
       commitSelection();
-      const link = document.createElement('a');
 
+      let dataUrl;
       if (format === 'png') {
-        link.download = 'untitled.png';
-        link.href = mainCanvas.toDataURL('image/png');
+        dataUrl = mainCanvas.toDataURL('image/png');
       } else if (format === 'jpeg') {
-        link.download = 'untitled.jpg';
-        link.href = mainCanvas.toDataURL('image/jpeg', 0.95);
+        dataUrl = mainCanvas.toDataURL('image/jpeg', 0.95);
       } else if (format === 'bmp') {
-        link.download = 'untitled.bmp';
-        link.href = exportBMP();
+        dataUrl = exportBMPDataURL();
       }
 
+      if (window.nativeAPI && window.nativeAPI.saveFileDialog) {
+        try {
+          const ext = (format === 'jpeg') ? 'jpg' : format;
+          const defaultName = `${currentFileName}.${ext}`;
+          const res = await window.nativeAPI.saveFileDialog({
+            format,
+            dataUrl,
+            defaultName
+          });
+          if (!res.canceled && res.filePath) {
+            currentFileName = res.name.replace(/\.[^/.]+$/, "");
+            updateWindowTitle(res.name);
+            STATE.isModified = false;
+          }
+          return;
+        } catch (err) {
+          console.error('Native save error:', err);
+        }
+      }
+
+      // Standard Web fallback
+      const link = document.createElement('a');
+      link.download = `${currentFileName}.${format === 'jpeg' ? 'jpg' : format}`;
+      link.href = dataUrl;
       link.click();
       STATE.isModified = false;
     }
 
-    function exportBMP() {
+    function exportBMPDataURL() {
       const w = mainCanvas.width;
       const h = mainCanvas.height;
       const imgData = mainCtx.getImageData(0, 0, w, h);
@@ -3044,29 +3076,28 @@
       const pixelArraySize = rowSize * h;
       const fileSize = 54 + pixelArraySize;
 
-      const buffer = new ArrayBuffer(fileSize);
-      const view = new DataView(buffer);
+      const buffer = new Uint8Array(fileSize);
+      const view = new DataView(buffer.buffer);
 
       // BMP Header
       view.setUint16(0, 0x4D42, false); // 'BM'
       view.setUint32(2, fileSize, true);
       view.setUint32(6, 0, true);
-      view.setUint32(10, 54, true); // Offset to pixels
+      view.setUint32(10, 54, true);
 
-      // DIB Header (BITMAPINFOHEADER)
-      view.setUint32(14, 40, true); // Header size
+      // DIB Header
+      view.setUint32(14, 40, true);
       view.setInt32(18, w, true);
-      view.setInt32(22, h, true); // Bottom-up
-      view.setUint16(26, 1, true); // Planes
-      view.setUint16(28, 24, true); // 24-bit
-      view.setUint32(30, 0, true); // Compression (none)
+      view.setInt32(22, h, true);
+      view.setUint16(26, 1, true);
+      view.setUint16(28, 24, true);
+      view.setUint32(30, 0, true);
       view.setUint32(34, pixelArraySize, true);
-      view.setInt32(38, 2835, true); // 72 DPI
+      view.setInt32(38, 2835, true);
       view.setInt32(42, 2835, true);
       view.setUint32(46, 0, true);
       view.setUint32(50, 0, true);
 
-      // Pixel Data (BGR, bottom to top)
       let offset = 54;
       for (let y = h - 1; y >= 0; y--) {
         for (let x = 0; x < w; x++) {
@@ -3080,24 +3111,40 @@
         }
       }
 
-      const blob = new Blob([buffer], { type: 'image/bmp' });
-      return URL.createObjectURL(blob);
+      let binary = '';
+      const len = buffer.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(buffer[i]);
+      }
+      return 'data:image/bmp;base64,' + btoa(binary);
+    }
+
+    function exportBMP() {
+      const dataUrl = exportBMPDataURL();
+      return dataUrl;
+    }
+
+    function loadImageFromDataURL(dataUrl, fileName) {
+      const img = new Image();
+      img.onload = () => {
+        commitActiveShape();
+        commitSelection();
+        mainCanvas.width = img.width;
+        mainCanvas.height = img.height;
+        updateCanvasSizeUI();
+        mainCtx.drawImage(img, 0, 0);
+        saveSnapshot();
+        currentFileName = fileName ? fileName.replace(/\.[^/.]+$/, "") : 'Untitled';
+        updateWindowTitle(fileName || 'Untitled');
+      };
+      img.src = dataUrl;
     }
 
     function openImageFile(file) {
       if (!file) return;
       const reader = new FileReader();
       reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          mainCanvas.width = img.width;
-          mainCanvas.height = img.height;
-          updateCanvasSizeUI();
-          mainCtx.drawImage(img, 0, 0);
-          saveSnapshot();
-          document.getElementById('windowTitle').textContent = `${file.name} - Paint`;
-        };
-        img.src = e.target.result;
+        loadImageFromDataURL(e.target.result, file.name);
       };
       reader.readAsDataURL(file);
     }
@@ -3404,15 +3451,29 @@
       document.getElementById('menuNew').addEventListener('click', () => {
         hideAllMenus();
         if (confirm('Start a new picture? Unsaved changes will be discarded.')) {
+          commitActiveShape();
+          commitSelection();
           mainCtx.fillStyle = '#ffffff';
           mainCtx.fillRect(0, 0, mainCanvas.width, mainCanvas.height);
           saveSnapshot();
-          document.getElementById('windowTitle').textContent = 'Untitled - Paint';
+          currentFileName = 'Untitled';
+          updateWindowTitle('Untitled');
         }
       });
 
-      document.getElementById('menuOpen').addEventListener('click', () => {
+      document.getElementById('menuOpen').addEventListener('click', async () => {
         hideAllMenus();
+        if (window.nativeAPI && window.nativeAPI.openFileDialog) {
+          try {
+            const res = await window.nativeAPI.openFileDialog();
+            if (!res.canceled && res.dataUrl) {
+              loadImageFromDataURL(res.dataUrl, res.name);
+            }
+            return;
+          } catch(err) {
+            console.error('Native open error:', err);
+          }
+        }
         document.getElementById('fileInput').click();
       });
       document.getElementById('fileInput').addEventListener('change', (e) => {
@@ -3637,7 +3698,7 @@
               break;
             case 'o':
               e.preventDefault();
-              document.getElementById('fileInput').click();
+              document.getElementById('menuOpen').click();
               break;
             case 'n':
               e.preventDefault();
@@ -3760,6 +3821,103 @@
               commitSelection();
               commitTextTool();
               break;
+          }
+        }
+      });
+    }
+
+    /* ========================================================================
+       Native Desktop Bridge Integration
+       ======================================================================== */
+    function setupNativeBridge() {
+      if (!window.nativeAPI) return;
+
+      if (window.nativeAPI.onMenuAction) {
+        window.nativeAPI.onMenuAction((action) => {
+          switch (action) {
+            case 'new':
+              document.getElementById('menuNew')?.click();
+              break;
+            case 'open':
+              document.getElementById('menuOpen')?.click();
+              break;
+            case 'save':
+            case 'save-as':
+              saveFile('png');
+              break;
+            case 'undo':
+              undo();
+              break;
+            case 'redo':
+              redo();
+              break;
+            case 'cut':
+              document.getElementById('btnCut')?.click();
+              break;
+            case 'copy':
+              document.getElementById('btnCopy')?.click();
+              break;
+            case 'paste':
+              document.getElementById('btnPaste')?.click();
+              break;
+            case 'select-all':
+              selectTool('select');
+              STATE.selection = {
+                x: 0,
+                y: 0,
+                w: mainCanvas.width,
+                h: mainCanvas.height,
+                imgData: mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height),
+                floating: false
+              };
+              renderSelectionOverlay();
+              selectionText.textContent = `${mainCanvas.width} × ${mainCanvas.height} px`;
+              break;
+            case 'zoom-in':
+              document.getElementById('btnZoomIn')?.click();
+              break;
+            case 'zoom-out':
+              document.getElementById('btnZoomOut')?.click();
+              break;
+            case 'zoom-100':
+              document.getElementById('btnZoom100')?.click();
+              break;
+            case 'toggle-grid': {
+              const chk = document.getElementById('chkGridlines');
+              if (chk) {
+                chk.checked = !chk.checked;
+                gridOverlay.style.display = chk.checked ? 'block' : 'none';
+                updateGridOverlay();
+              }
+              break;
+            }
+            case 'toggle-theme':
+              toggleTheme();
+              break;
+          }
+        });
+      }
+
+      if (window.nativeAPI.onFileOpened) {
+        window.nativeAPI.onFileOpened((data) => {
+          if (data && data.dataUrl) {
+            loadImageFromDataURL(data.dataUrl, data.name);
+          }
+        });
+      }
+
+      // Drag-and-drop file onto window
+      window.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      window.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          const file = e.dataTransfer.files[0];
+          if (file.type.startsWith('image/')) {
+            openImageFile(file);
           }
         }
       });
