@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Browser cache & debug profiles
+temp_dbg/
+native-profile/
+*.pma
+
+# OS generated files
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store
+
+# Reverse engineering extraction dumps
+extracted_strings_ascii.json
+extracted_strings_u16.json
+pe_resources.json
+search_bin.js
