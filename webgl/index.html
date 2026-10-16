@@ -483,6 +483,8 @@
     .canvas-container {
       margin: auto;
       position: relative;
+      width: 960px;
+      height: 540px;
       background: white;
       box-shadow: var(--canvas-shadow);
       display: inline-block;
@@ -506,7 +508,13 @@
     }
 
     #mainCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
       background: #ffffff;
+      z-index: 2;
     }
 
     #glCanvas {
@@ -523,6 +531,8 @@
       position: absolute;
       top: 0;
       left: 0;
+      width: 100%;
+      height: 100%;
       background: transparent !important;
       pointer-events: none;
       z-index: 6;
@@ -532,18 +542,32 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 2px 8px;
+      padding: 3px 10px;
       border-radius: 999px;
       font-size: 11px;
       font-weight: 600;
       background: rgba(0, 120, 212, 0.12);
       color: var(--accent);
       border: 1px solid rgba(0, 120, 212, 0.35);
-      cursor: help;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    }
+    .webgl-pill:hover {
+      background: rgba(0, 120, 212, 0.22);
+    }
+    .webgl-pill.cpu-mode {
+      background: rgba(245, 158, 11, 0.15);
+      color: #d97706;
+      border-color: rgba(245, 158, 11, 0.45);
     }
     body.dark-theme .webgl-pill {
       background: rgba(96, 205, 255, 0.14);
       border-color: rgba(96, 205, 255, 0.35);
+    }
+    body.dark-theme .webgl-pill.cpu-mode {
+      background: rgba(251, 191, 36, 0.16);
+      color: #fbbf24;
+      border-color: rgba(251, 191, 36, 0.45);
     }
     .webgl-indicator {
       width: 7px;
@@ -551,6 +575,84 @@
       border-radius: 50%;
       background: #22c55e;
       box-shadow: 0 0 6px #22c55e;
+    }
+    .webgl-pill.cpu-mode .webgl-indicator {
+      background: #f59e0b;
+      box-shadow: 0 0 6px #f59e0b;
+    }
+
+    .engine-mode-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .engine-card {
+      border: 2px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 10px 12px;
+      cursor: pointer;
+      background: var(--input-bg);
+      transition: all 0.15s;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .engine-card:hover {
+      border-color: var(--accent);
+      background: var(--bg-hover);
+    }
+    .engine-card.active {
+      border-color: var(--accent);
+      background: var(--bg-active);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .engine-card-title {
+      font-weight: 700;
+      font-size: 12.5px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--text-main);
+    }
+    .engine-card-desc {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.35;
+    }
+    .telemetry-box {
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      background: var(--input-bg);
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .telemetry-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11.5px;
+      gap: 12px;
+      border-bottom: 1px dashed var(--border-subtle);
+      padding-bottom: 4px;
+    }
+    .telemetry-row:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .telemetry-label {
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+    .telemetry-val {
+      font-family: Consolas, monospace;
+      font-weight: 600;
+      color: var(--text-main);
+      text-align: right;
+      word-break: break-word;
     }
 
     /* Canvas Resize Handles */
@@ -910,11 +1012,15 @@
       </button>
     </div>
     <div class="window-title" id="windowTitle">Untitled - Paint (WebGL Edition)</div>
-    <div style="display:flex; align-items:center; gap:8px;">
-      <div class="webgl-pill" id="webglPill" title="Hardware-accelerated WebGL 2D Drawing Pipeline">
+    <div style="display:flex; align-items:center; gap:6px;">
+      <div class="webgl-pill" id="webglPill" title="Click to view GPU / CPU Hardware Settings & Diagnostics">
         <span class="webgl-indicator" id="webglIndicator"></span>
-        <span id="webglStatusText">WebGL2 GPU</span>
+        <span id="webglStatusText">GPU: WebGL2</span>
+        <span style="opacity:0.75; font-size:10px;">⚙</span>
       </div>
+      <button class="qa-btn" id="btnQuickEngineToggle" title="Quick Switch between GPU (WebGL) and CPU (Canvas 2D)" style="width:auto; padding:0 7px; font-size:10.5px; font-weight:600; border:1px solid var(--border-subtle);">
+        Switch to CPU
+      </button>
       <button class="qa-btn" id="btnThemeToggle" title="Toggle dark/light theme (Ctrl+Shift+D)">
         <svg id="themeIcon" viewBox="0 0 16 16">
           <path id="themeIconPath" d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278z"/>
@@ -1096,6 +1202,20 @@
       </div>
       <div class="group-label">Colors</div>
     </div>
+
+    <!-- Hardware & Compute Engine Group -->
+    <div class="ribbon-group">
+      <div class="group-content" style="flex-direction:column; gap:4px; padding:0 6px; justify-content:center;">
+        <button class="tool-btn" id="btnRibbonEngineToggle" title="Toggle between GPU WebGL and CPU Canvas 2D" style="padding:4px 8px; font-weight:600; font-size:11px; display:flex; gap:5px; align-items:center;">
+          <span class="webgl-indicator" id="ribbonIndicator"></span>
+          <span id="ribbonEngineText">GPU Active</span>
+        </button>
+        <button class="tool-btn" id="btnRibbonGpuSettings" title="Open GPU / CPU Hardware Settings & Diagnostics" style="padding:3px 8px; font-size:11px;">
+          ⚙ Hardware Settings
+        </button>
+      </div>
+      <div class="group-label">Hardware (GPU/CPU)</div>
+    </div>
   </div>
 
   <!-- Ribbon Bar (View Tab) -->
@@ -1157,11 +1277,14 @@
             <option value="3">Sepia (GPU)</option>
           </select>
         </div>
-        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="Toggle between Nearest-Neighbor crisp pixels vs Bilinear texture filtering">
-          <input type="checkbox" id="chkGpuSmooth"> Bilinear Smooth
-        </label>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="Toggle between Nearest-Neighbor crisp pixels vs Bilinear texture filtering">
+            <input type="checkbox" id="chkGpuSmooth"> Bilinear Smooth
+          </label>
+          <button class="btn" id="btnViewGpuSettings" style="padding:1px 6px; font-size:10.5px;">Settings ⚙</button>
+        </div>
       </div>
-      <div class="group-label">WebGL Shaders</div>
+      <div class="group-label">WebGL Shaders & GPU</div>
     </div>
   </div>
 
@@ -1198,6 +1321,15 @@
     <div class="status-item" id="statusCanvasSize">
       <svg style="width:12px;height:12px" viewBox="0 0 24 24"><path fill="currentColor" d="M21 3H3C2 3 1 4 1 5v14c0 1 1 2 2 2h18c1 0 2-1 2-2V5c0-1-1-2-2-2zm0 16.01H3V4.99h18v14.02z"/></svg>
       <span id="canvasSizeText">960 × 540 px</span>
+    </div>
+    <div class="status-separator"></div>
+    <div class="status-item" id="statusEngineBadge" style="cursor:pointer;" title="Click to view Hardware & Rendering Settings">
+      <span class="webgl-indicator" id="statusIndicator"></span>
+      <span id="statusEngineText">GPU (WebGL2)</span>
+    </div>
+    <div class="status-separator"></div>
+    <div class="status-item" id="statusFillStats" title="Last Flood Fill Performance">
+      <span id="statusFillText">Fill: Ready</span>
     </div>
     <div class="status-spacer"></div>
     <label class="theme-switch-item" for="statusThemeSwitch" title="Toggle dark theme (Ctrl+Shift+D)">
@@ -1247,6 +1379,9 @@
     <div class="menu-item" id="menuProperties">
       Image Properties
       <span class="menu-shortcut">Ctrl+E</span>
+    </div>
+    <div class="menu-item" id="menuGpuSettings">
+      Hardware & GPU Settings...
     </div>
     <div class="menu-item" id="menuClear">
       Clear Canvas
@@ -1428,6 +1563,119 @@
     </div>
   </div>
 
+  <!-- Hardware & Rendering Settings Modal -->
+  <div class="modal-backdrop" id="modalGpuSettings">
+    <div class="modal-dialog" style="width:490px; max-width:94vw;">
+      <div class="modal-header">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:16px;">⚡</span>
+          <span>Hardware & Rendering Engine Settings</span>
+        </div>
+        <button class="modal-close" data-modal="modalGpuSettings">&times;</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh; overflow-y:auto; padding:16px 20px;">
+        <div style="font-weight:700; margin-bottom:6px; font-size:12.5px;">Active Rendering Engine</div>
+        <div class="engine-mode-grid">
+          <div class="engine-card active" id="cardModeGpu">
+            <div class="engine-card-title">
+              <span>🚀 GPU (WebGL)</span>
+              <span class="webgl-indicator" style="background:#22c55e;"></span>
+            </div>
+            <div class="engine-card-desc">Hardware accelerated via WebGL shaders, GPU texture cache & pixel grid. Fast smooth zooming on all displays.</div>
+          </div>
+          <div class="engine-card" id="cardModeCpu">
+            <div class="engine-card-title">
+              <span>💻 CPU (Canvas 2D)</span>
+              <span class="webgl-indicator" style="background:#f59e0b;"></span>
+            </div>
+            <div class="engine-card-desc">Pure CPU software rasterizer. Direct pixel manipulation, bypasses GPU textures and WebGL drivers completely.</div>
+          </div>
+        </div>
+
+        <div style="font-weight:700; margin-bottom:6px; font-size:12.5px;">Live Hardware Telemetry & Diagnostics</div>
+        <div class="telemetry-box">
+          <div class="telemetry-row">
+            <span class="telemetry-label">Active Engine:</span>
+            <span class="telemetry-val" id="diagEngine">GPU (WebGL 2.0)</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">GPU Renderer:</span>
+            <span class="telemetry-val" id="diagGpuRenderer" style="font-size:11px;">Detecting...</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">GPU Vendor:</span>
+            <span class="telemetry-val" id="diagGpuVendor">Detecting...</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Max Hardware Texture:</span>
+            <span class="telemetry-val" id="diagMaxTex">16384 × 16384 px</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Canvas Dimensions:</span>
+            <span class="telemetry-val" id="diagCanvasDim">960 × 540 px (0.52 MP)</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Canvas Buffer RAM:</span>
+            <span class="telemetry-val" id="diagCanvasRam">~2.0 MB</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Active GPU Texture:</span>
+            <span class="telemetry-val" id="diagGpuTexDim">960 × 540 px (1:1 Native)</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Last Flood Fill:</span>
+            <span class="telemetry-val" id="diagFillPerf" style="color:var(--accent);">Ready</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Last GPU Sync:</span>
+            <span class="telemetry-val" id="diagGpuSync">0.0 ms</span>
+          </div>
+        </div>
+
+        <div style="font-weight:700; margin-bottom:8px; font-size:12.5px;">GPU Configuration & Large Canvas Optimization</div>
+        <div class="form-row">
+          <label style="width:170px;">GPU Max Texture Cap:</label>
+          <select id="selModalTexCap" style="flex:1; padding:4px 6px; font-size:11.5px; border:1px solid var(--input-border); border-radius:4px; background:var(--input-bg); color:var(--text-main);">
+            <option value="4096">4096 px (Recommended for 10kx10k Safe VRAM)</option>
+            <option value="8192">8192 px (High Quality)</option>
+            <option value="16384">16384 px (Uncapped Max Hardware)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label style="width:170px;">Texture Filtering:</label>
+          <select id="selModalTexFilter" style="flex:1; padding:4px 6px; font-size:11.5px; border:1px solid var(--input-border); border-radius:4px; background:var(--input-bg); color:var(--text-main);">
+            <option value="nearest">Nearest Neighbor (Pixel Art / Crisp)</option>
+            <option value="bilinear">Bilinear Interpolation (Smooth)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label style="width:170px;">GPU Fragment Shader:</label>
+          <select id="selModalGpuShader" style="flex:1; padding:4px 6px; font-size:11.5px; border:1px solid var(--input-border); border-radius:4px; background:var(--input-bg); color:var(--text-main);">
+            <option value="0">Normal</option>
+            <option value="1">Invert (GPU)</option>
+            <option value="2">Grayscale (GPU)</option>
+            <option value="3">Sepia (GPU)</option>
+          </select>
+        </div>
+        <div style="margin: 8px 0 12px 0;">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="chkModalGpuGrid" checked>
+            <span>Enable GPU Hardware Pixel Grid Shader (activates at &ge; 400% zoom)</span>
+          </label>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-top:14px;">
+          <button class="btn" id="btnRunFillBench" style="flex:1; font-weight:600; padding:8px 10px;">
+            ⚡ Run 10kx10k Flood Fill Benchmark
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" data-modal="modalGpuSettings">Done</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     /* ========================================================================
        Paint Clone - Core State & Architecture
@@ -1494,7 +1742,7 @@
     const qaRedoBtn = document.getElementById('qaRedoBtn');
 
     /* ========================================================================
-       WebGL 2D Hardware-Accelerated Rendering Engine
+       WebGL 2D Hardware-Accelerated Rendering Engine & Engine Switcher
        ======================================================================== */
     const WebGLRenderer = {
       gl: null,
@@ -1503,11 +1751,22 @@
       posBuffer: null,
       texCoordBuffer: null,
       isWebGL2: false,
+      mode: 'gpu',         // 'gpu' (WebGL hardware accelerated) | 'cpu' (Canvas 2D software)
       gpuName: 'WebGL GPU',
-      filterMode: 0,      // 0=Normal, 1=Invert, 2=Grayscale, 3=Sepia
+      vendorName: 'Unknown',
+      glVersion: 'WebGL 1.0',
+      maxTextureSize: 8192,
+      textureCap: 4096,    // Safe cap for huge canvases (e.g. 10000x10000)
+      activeTexWidth: 0,
+      activeTexHeight: 0,
+      filterMode: 0,       // 0=Normal, 1=Invert, 2=Grayscale, 3=Sepia
       smoothFilter: false,
       lastWidth: 0,
       lastHeight: 0,
+      lastSyncMs: 0,
+      lastFillStats: null, // { px, ms, mpxSec, engine }
+      stagingCanvas: null,
+      stagingCtx: null,
       uniforms: {},
 
       init() {
@@ -1526,26 +1785,37 @@
         let gl = glCanvas.getContext('webgl2', attrs);
         if (gl) {
           this.isWebGL2 = true;
+          this.glVersion = 'WebGL 2.0 (ES 3.0)';
         } else {
           gl = glCanvas.getContext('webgl', attrs) || glCanvas.getContext('experimental-webgl', attrs);
           this.isWebGL2 = false;
+          this.glVersion = 'WebGL 1.0';
         }
 
         if (!gl) {
-          console.warn('WebGL not available, falling back to 2D Canvas.');
-          glCanvas.style.display = 'none';
-          const statusEl = document.getElementById('webglStatusText');
-          if (statusEl) statusEl.textContent = '2D Fallback';
+          console.warn('WebGL not available, defaulting to CPU Canvas 2D mode.');
+          this.mode = 'cpu';
+          if (glCanvas) glCanvas.style.display = 'none';
+          this.updateTelemetryUI();
           return false;
         }
 
         this.gl = gl;
 
+        // Query detailed hardware telemetry
         const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
         if (debugInfo) {
           const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+          const vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
           if (renderer) this.gpuName = renderer;
+          if (vendor) this.vendorName = vendor;
+        } else {
+          this.gpuName = gl.getParameter(gl.RENDERER) || 'Generic WebGL';
+          this.vendorName = gl.getParameter(gl.VENDOR) || 'Generic';
         }
+
+        const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+        if (maxTex) this.maxTextureSize = maxTex;
 
         const vsSource = `
           attribute vec2 a_position;
@@ -1655,47 +1925,268 @@
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         this.updateFiltering();
 
-        const statusEl = document.getElementById('webglStatusText');
-        const pillEl = document.getElementById('webglPill');
-        if (statusEl) {
-          statusEl.textContent = this.isWebGL2 ? 'WebGL2 GPU' : 'WebGL1 GPU';
-        }
-        if (pillEl) {
-          pillEl.title = `Hardware Accelerated (${this.isWebGL2 ? 'WebGL 2.0' : 'WebGL 1.0'}) — ${this.gpuName}`;
-        }
+        // Create staging canvas for large texture downsampling
+        this.stagingCanvas = document.createElement('canvas');
+        this.stagingCtx = this.stagingCanvas.getContext('2d', { willReadFrequently: true });
+        this.stagingCtx.imageSmoothingEnabled = false;
 
-        // Bind UI controls
+        this.bindEvents();
+        this.sync(true);
+        this.updateTelemetryUI();
+        return true;
+      },
+
+      bindEvents() {
+        // UI Controls in View Ribbon
         const chkGpuGrid = document.getElementById('chkGpuGrid');
-        if (chkGpuGrid) {
-          chkGpuGrid.addEventListener('change', () => this.render());
-        }
+        if (chkGpuGrid) chkGpuGrid.addEventListener('change', () => this.render());
+
         const selGpuFilter = document.getElementById('selGpuFilter');
         if (selGpuFilter) {
           selGpuFilter.addEventListener('change', (e) => {
             this.filterMode = parseInt(e.target.value, 10) || 0;
+            const modalSel = document.getElementById('selModalGpuShader');
+            if (modalSel) modalSel.value = this.filterMode;
             this.render();
           });
         }
+
         const chkGpuSmooth = document.getElementById('chkGpuSmooth');
         if (chkGpuSmooth) {
           chkGpuSmooth.addEventListener('change', (e) => {
             this.smoothFilter = e.target.checked;
+            const modalSel = document.getElementById('selModalTexFilter');
+            if (modalSel) modalSel.value = this.smoothFilter ? 'bilinear' : 'nearest';
             this.updateFiltering();
             this.render();
           });
         }
 
-        glCanvas.addEventListener('webglcontextlost', (e) => {
-          e.preventDefault();
-          console.warn('WebGL context lost');
-        });
-        glCanvas.addEventListener('webglcontextrestored', () => {
-          this.init();
-          this.sync(true);
-        });
+        // Title Bar & Quick Toggle Buttons
+        const pillEl = document.getElementById('webglPill');
+        if (pillEl) {
+          pillEl.addEventListener('click', () => showModal('modalGpuSettings'));
+        }
+        const quickBtn = document.getElementById('btnQuickEngineToggle');
+        if (quickBtn) {
+          quickBtn.addEventListener('click', () => {
+            this.setMode(this.mode === 'gpu' ? 'cpu' : 'gpu');
+          });
+        }
+        const ribbonToggle = document.getElementById('btnRibbonEngineToggle');
+        if (ribbonToggle) {
+          ribbonToggle.addEventListener('click', () => {
+            this.setMode(this.mode === 'gpu' ? 'cpu' : 'gpu');
+          });
+        }
+        const ribbonSettings = document.getElementById('btnRibbonGpuSettings');
+        if (ribbonSettings) {
+          ribbonSettings.addEventListener('click', () => showModal('modalGpuSettings'));
+        }
+        const viewGpuSettings = document.getElementById('btnViewGpuSettings');
+        if (viewGpuSettings) {
+          viewGpuSettings.addEventListener('click', () => showModal('modalGpuSettings'));
+        }
+        const statusBadge = document.getElementById('statusEngineBadge');
+        if (statusBadge) {
+          statusBadge.addEventListener('click', () => showModal('modalGpuSettings'));
+        }
+        const menuGpu = document.getElementById('menuGpuSettings');
+        if (menuGpu) {
+          menuGpu.addEventListener('click', () => {
+            hideAllMenus();
+            showModal('modalGpuSettings');
+          });
+        }
 
-        this.sync(true);
-        return true;
+        // Modal Controls
+        const cardGpu = document.getElementById('cardModeGpu');
+        const cardCpu = document.getElementById('cardModeCpu');
+        if (cardGpu) cardGpu.addEventListener('click', () => this.setMode('gpu'));
+        if (cardCpu) cardCpu.addEventListener('click', () => this.setMode('cpu'));
+
+        const selModalCap = document.getElementById('selModalTexCap');
+        if (selModalCap) {
+          selModalCap.addEventListener('change', (e) => {
+            this.textureCap = parseInt(e.target.value, 10) || 4096;
+            this.sync(true);
+          });
+        }
+
+        const selModalFilter = document.getElementById('selModalTexFilter');
+        if (selModalFilter) {
+          selModalFilter.addEventListener('change', (e) => {
+            this.smoothFilter = (e.target.value === 'bilinear');
+            const ribbonSmooth = document.getElementById('chkGpuSmooth');
+            if (ribbonSmooth) ribbonSmooth.checked = this.smoothFilter;
+            this.updateFiltering();
+            this.render();
+          });
+        }
+
+        const selModalShader = document.getElementById('selModalGpuShader');
+        if (selModalShader) {
+          selModalShader.addEventListener('change', (e) => {
+            this.filterMode = parseInt(e.target.value, 10) || 0;
+            const ribbonShader = document.getElementById('selGpuFilter');
+            if (ribbonShader) ribbonShader.value = this.filterMode;
+            this.render();
+          });
+        }
+
+        const chkModalGrid = document.getElementById('chkModalGpuGrid');
+        if (chkModalGrid) {
+          chkModalGrid.addEventListener('change', (e) => {
+            const ribbonGrid = document.getElementById('chkGpuGrid');
+            if (ribbonGrid) ribbonGrid.checked = e.target.checked;
+            this.render();
+          });
+        }
+
+        const btnBench = document.getElementById('btnRunFillBench');
+        if (btnBench) {
+          btnBench.addEventListener('click', () => this.run10kBenchmark());
+        }
+
+        // Context loss / recovery
+        const glCanvas = document.getElementById('glCanvas');
+        if (glCanvas) {
+          glCanvas.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            console.warn('WebGL context lost');
+          });
+          glCanvas.addEventListener('webglcontextrestored', () => {
+            this.init();
+            this.sync(true);
+          });
+        }
+      },
+
+      setMode(newMode) {
+        if (newMode !== 'gpu' && newMode !== 'cpu') return;
+        this.mode = newMode;
+
+        const glCanvas = document.getElementById('glCanvas');
+        if (glCanvas) {
+          glCanvas.style.display = (this.mode === 'gpu') ? 'block' : 'none';
+        }
+
+        if (this.mode === 'gpu') {
+          this.sync(true);
+        }
+
+        this.updateTelemetryUI();
+      },
+
+      updateTelemetryUI() {
+        const isGpu = (this.mode === 'gpu');
+
+        // Status pill
+        const pillEl = document.getElementById('webglPill');
+        const statusEl = document.getElementById('webglStatusText');
+        const quickBtn = document.getElementById('btnQuickEngineToggle');
+        const ribbonEngineText = document.getElementById('ribbonEngineText');
+        const ribbonIndicator = document.getElementById('ribbonIndicator');
+        const statusEngineText = document.getElementById('statusEngineText');
+        const statusIndicator = document.getElementById('statusIndicator');
+
+        if (pillEl) {
+          if (isGpu) {
+            pillEl.classList.remove('cpu-mode');
+            pillEl.title = `GPU Mode (${this.isWebGL2 ? 'WebGL 2.0' : 'WebGL 1.0'}) — ${this.gpuName}\nClick for Hardware Settings`;
+          } else {
+            pillEl.classList.add('cpu-mode');
+            pillEl.title = `CPU Mode (Canvas 2D Software Rasterizer)\nClick for Hardware Settings`;
+          }
+        }
+
+        if (statusEl) {
+          statusEl.textContent = isGpu ? (this.isWebGL2 ? 'GPU: WebGL2' : 'GPU: WebGL1') : 'CPU: 2D';
+        }
+
+        if (quickBtn) {
+          quickBtn.textContent = isGpu ? 'Switch to CPU' : 'Switch to GPU';
+          quickBtn.title = isGpu ? 'Switch to CPU Software Rasterizer (Canvas 2D)' : 'Switch to GPU Hardware Accelerated WebGL Engine';
+        }
+
+        if (ribbonEngineText) {
+          ribbonEngineText.textContent = isGpu ? 'GPU Active' : 'CPU Active';
+        }
+        if (ribbonIndicator) {
+          ribbonIndicator.style.background = isGpu ? '#22c55e' : '#f59e0b';
+          ribbonIndicator.style.boxShadow = isGpu ? '0 0 6px #22c55e' : '0 0 6px #f59e0b';
+        }
+
+        if (statusEngineText) {
+          statusEngineText.textContent = isGpu ? (this.isWebGL2 ? 'GPU (WebGL2)' : 'GPU (WebGL1)') : 'CPU (Canvas 2D)';
+        }
+        if (statusIndicator) {
+          statusIndicator.style.background = isGpu ? '#22c55e' : '#f59e0b';
+          statusIndicator.style.boxShadow = isGpu ? '0 0 6px #22c55e' : '0 0 6px #f59e0b';
+        }
+
+        // Modal diagnostics
+        const cardGpu = document.getElementById('cardModeGpu');
+        const cardCpu = document.getElementById('cardModeCpu');
+        if (cardGpu && cardCpu) {
+          if (isGpu) {
+            cardGpu.classList.add('active');
+            cardCpu.classList.remove('active');
+          } else {
+            cardCpu.classList.add('active');
+            cardGpu.classList.remove('active');
+          }
+        }
+
+        const diagEngine = document.getElementById('diagEngine');
+        if (diagEngine) {
+          diagEngine.textContent = isGpu ? (this.isWebGL2 ? 'GPU — WebGL 2.0 Hardware Accelerated' : 'GPU — WebGL 1.0 Hardware Accelerated') : 'CPU — Canvas 2D Software Rasterizer';
+          diagEngine.style.color = isGpu ? '#22c55e' : '#f59e0b';
+        }
+
+        const diagGpuRenderer = document.getElementById('diagGpuRenderer');
+        if (diagGpuRenderer) diagGpuRenderer.textContent = this.gpuName;
+
+        const diagGpuVendor = document.getElementById('diagGpuVendor');
+        if (diagGpuVendor) diagGpuVendor.textContent = this.vendorName;
+
+        const diagMaxTex = document.getElementById('diagMaxTex');
+        if (diagMaxTex) diagMaxTex.textContent = `${this.maxTextureSize} × ${this.maxTextureSize} px`;
+
+        const w = mainCanvas ? mainCanvas.width : 960;
+        const h = mainCanvas ? mainCanvas.height : 540;
+        const mp = ((w * h) / 1000000).toFixed(2);
+        const ramMb = ((w * h * 4) / (1024 * 1024)).toFixed(1);
+
+        const diagCanvasDim = document.getElementById('diagCanvasDim');
+        if (diagCanvasDim) diagCanvasDim.textContent = `${w} × ${h} px (${mp} MP)`;
+
+        const diagCanvasRam = document.getElementById('diagCanvasRam');
+        if (diagCanvasRam) diagCanvasRam.textContent = `~${ramMb} MB RAM`;
+
+        const diagGpuTexDim = document.getElementById('diagGpuTexDim');
+        if (diagGpuTexDim) {
+          if (!isGpu) {
+            diagGpuTexDim.textContent = 'None (CPU Mode Active)';
+          } else if (this.activeTexWidth > 0 && (this.activeTexWidth !== w || this.activeTexHeight !== h)) {
+            diagGpuTexDim.textContent = `${this.activeTexWidth} × ${this.activeTexHeight} px (Downsampled safe VRAM)`;
+          } else {
+            diagGpuTexDim.textContent = `${w} × ${h} px (1:1 Native GPU Texture)`;
+          }
+        }
+
+        const diagGpuSync = document.getElementById('diagGpuSync');
+        if (diagGpuSync) {
+          diagGpuSync.textContent = isGpu ? `${this.lastSyncMs} ms` : 'Bypassed (0 ms)';
+        }
+
+        const diagFillPerf = document.getElementById('diagFillPerf');
+        const statusFillText = document.getElementById('statusFillText');
+        if (this.lastFillStats) {
+          const s = `${this.lastFillStats.px.toLocaleString()} px in ${this.lastFillStats.ms} ms (${this.lastFillStats.mpxSec} MP/s) [${this.lastFillStats.engine}]`;
+          if (diagFillPerf) diagFillPerf.textContent = s;
+          if (statusFillText) statusFillText.textContent = `Fill: ${this.lastFillStats.ms} ms (${this.lastFillStats.engine})`;
+        }
       },
 
       compileShader(type, source) {
@@ -1734,28 +2225,65 @@
       },
 
       sync(forceFullUpload = false) {
+        if (this.mode === 'cpu') {
+          this.updateTelemetryUI();
+          return;
+        }
         const gl = this.gl;
         if (!gl || !mainCanvas) return;
 
+        const t0 = performance.now();
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        if (forceFullUpload || this.lastWidth !== mainCanvas.width || this.lastHeight !== mainCanvas.height) {
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, mainCanvas);
-          this.lastWidth = mainCanvas.width;
-          this.lastHeight = mainCanvas.height;
-        } else {
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, mainCanvas);
+
+        const w = mainCanvas.width;
+        const h = mainCanvas.height;
+        const cap = Math.min(this.maxTextureSize, this.textureCap);
+
+        let source = mainCanvas;
+        let uploadW = w;
+        let uploadH = h;
+
+        // If canvas exceeds textureCap, downscale through staging canvas
+        if (w > cap || h > cap) {
+          const ratio = Math.min(cap / w, cap / h);
+          uploadW = Math.max(1, Math.round(w * ratio));
+          uploadH = Math.max(1, Math.round(h * ratio));
+
+          if (this.stagingCanvas.width !== uploadW || this.stagingCanvas.height !== uploadH) {
+            this.stagingCanvas.width = uploadW;
+            this.stagingCanvas.height = uploadH;
+            this.stagingCtx.imageSmoothingEnabled = false;
+          }
+          this.stagingCtx.drawImage(mainCanvas, 0, 0, uploadW, uploadH);
+          source = this.stagingCanvas;
         }
+
+        this.activeTexWidth = uploadW;
+        this.activeTexHeight = uploadH;
+
+        if (forceFullUpload || this.lastWidth !== uploadW || this.lastHeight !== uploadH) {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+          this.lastWidth = uploadW;
+          this.lastHeight = uploadH;
+        } else {
+          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
+        }
+
+        this.lastSyncMs = Math.round((performance.now() - t0) * 10) / 10;
         this.render();
+        this.updateTelemetryUI();
       },
 
       render() {
+        if (this.mode === 'cpu') return;
         const gl = this.gl;
         const glCanvas = document.getElementById('glCanvas');
         if (!gl || !glCanvas || !mainCanvas) return;
 
-        const maxDim = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) || 8192;
-        const targetW = Math.min(maxDim, Math.max(1, Math.round(mainCanvas.width * STATE.zoom)));
-        const targetH = Math.min(maxDim, Math.max(1, Math.round(mainCanvas.height * STATE.zoom)));
+        // Match glCanvas backbuffer to mainCanvas dimensions up to max render buffer size
+        const maxDim = Math.min(this.maxTextureSize, 8192);
+        const targetW = Math.min(maxDim, mainCanvas.width);
+        const targetH = Math.min(maxDim, mainCanvas.height);
 
         if (glCanvas.width !== targetW || glCanvas.height !== targetH) {
           glCanvas.width = targetW;
@@ -1784,15 +2312,112 @@
       },
 
       readPixel(x, y) {
+        if (this.mode === 'cpu' || !this.gl) {
+          return mainCtx.getImageData(x, y, 1, 1).data;
+        }
         const gl = this.gl;
         const glCanvas = document.getElementById('glCanvas');
         if (!gl || !glCanvas) return null;
         this.render();
-        const glX = Math.min(glCanvas.width - 1, Math.max(0, Math.floor(x * STATE.zoom)));
-        const glY = Math.min(glCanvas.height - 1, Math.max(0, Math.floor((mainCanvas.height - 1 - y) * STATE.zoom)));
+        const glX = Math.min(glCanvas.width - 1, Math.max(0, Math.floor((x / mainCanvas.width) * glCanvas.width)));
+        const glY = Math.min(glCanvas.height - 1, Math.max(0, Math.floor(((mainCanvas.height - 1 - y) / mainCanvas.height) * glCanvas.height)));
         const pixel = new Uint8Array(4);
         gl.readPixels(glX, glY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
         return pixel;
+      },
+
+      run10kBenchmark() {
+        const btn = document.getElementById('btnRunFillBench');
+        if (btn) btn.disabled = true;
+
+        setTimeout(() => {
+          const w = 10000;
+          const h = 10000;
+          const totalPx = w * h;
+          const buf = new Uint32Array(totalPx);
+          buf.fill(0xFFFFFFFF);
+
+          const fillCol = 0xFFED1C24 >>> 0;
+          const matchCol = 0xFFFFFFFF >>> 0;
+
+          const t0 = performance.now();
+          // Shadow-span scanline fill
+          let stack = new Int32Array(65536);
+          let stackPtr = 0;
+          stack[stackPtr++] = 0;
+          stack[stackPtr++] = w;
+          stack[stackPtr++] = 0;
+          stack[stackPtr++] = 1;
+
+          let filled = 0;
+          while (stackPtr > 0) {
+            const dy = stack[--stackPtr];
+            const y = stack[--stackPtr];
+            const xr = stack[--stackPtr];
+            let xl = stack[--stackPtr];
+
+            let curY = y;
+            while (curY >= 0 && curY < h) {
+              const rowOffset = curY * w;
+              let l = xl;
+              while (l > 0 && buf[rowOffset + l - 1] === matchCol) l--;
+              let r = xr;
+              while (r < w && buf[rowOffset + r] === matchCol) r++;
+
+              buf.fill(fillCol, rowOffset + l, rowOffset + r);
+              filled += (r - l);
+
+              const nextY = curY + dy;
+              if (nextY >= 0 && nextY < h) {
+                const nextRow = nextY * w;
+                let inSpan = false;
+                let spanStart = l;
+                for (let x = l; x < r; x++) {
+                  if (buf[nextRow + x] === matchCol) {
+                    if (!inSpan) { inSpan = true; spanStart = x; }
+                  } else {
+                    if (inSpan) {
+                      if (stackPtr + 4 > stack.length) {
+                        const nextStack = new Int32Array(stack.length * 2);
+                        nextStack.set(stack);
+                        stack = nextStack;
+                      }
+                      stack[stackPtr++] = spanStart;
+                      stack[stackPtr++] = x;
+                      stack[stackPtr++] = nextY;
+                      stack[stackPtr++] = dy;
+                      inSpan = false;
+                    }
+                  }
+                }
+                if (inSpan) {
+                  if (stackPtr + 4 > stack.length) {
+                    const nextStack = new Int32Array(stack.length * 2);
+                    nextStack.set(stack);
+                    stack = nextStack;
+                  }
+                  stack[stackPtr++] = spanStart;
+                  stack[stackPtr++] = r;
+                  stack[stackPtr++] = nextY;
+                  stack[stackPtr++] = dy;
+                }
+              }
+              break;
+            }
+          }
+          const t1 = performance.now();
+          const elapsed = Math.round((t1 - t0) * 10) / 10;
+          const mpx = Math.round((totalPx / 1000000 / (elapsed / 1000)) * 10) / 10;
+
+          this.lastFillStats = {
+            px: filled,
+            ms: elapsed,
+            mpxSec: mpx,
+            engine: 'Benchmark 10kx10k'
+          };
+          this.updateTelemetryUI();
+          if (btn) btn.disabled = false;
+        }, 30);
       }
     };
 
@@ -1927,30 +2552,45 @@
       canvasSizeText.textContent = `${mainCanvas.width} × ${mainCanvas.height} px`;
       overlayCanvas.width = mainCanvas.width;
       overlayCanvas.height = mainCanvas.height;
+
+      // Update container layout dimensions
+      if (canvasContainer) {
+        canvasContainer.style.width = Math.round(mainCanvas.width * STATE.zoom) + 'px';
+        canvasContainer.style.height = Math.round(mainCanvas.height * STATE.zoom) + 'px';
+      }
+
+      // Re-assert smoothing settings after canvas resize
+      mainCtx.imageSmoothingEnabled = false;
+      overlayCtx.imageSmoothingEnabled = false;
+
       WebGLRenderer.sync(true);
+      WebGLRenderer.updateTelemetryUI();
     }
 
     /* ========================================================================
        History Stack (Undo / Redo)
        ======================================================================== */
-    function saveSnapshot() {
+    function saveSnapshot(existingImgData = null) {
       // Truncate any redo steps
       if (STATE.historyIndex < STATE.history.length - 1) {
         STATE.history = STATE.history.slice(0, STATE.historyIndex + 1);
       }
 
-      const imgData = mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
+      const imgData = existingImgData || mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
       STATE.history.push({
         width: mainCanvas.width,
         height: mainCanvas.height,
         data: imgData
       });
 
-      if (STATE.history.length > STATE.maxHistory) {
+      // Adaptive history length to prevent RAM exhaustion on large canvases (e.g. 10000x10000 = 400MB/snap)
+      const bytesPerSnap = mainCanvas.width * mainCanvas.height * 4;
+      const maxAllowed = Math.max(2, Math.min(STATE.maxHistory, Math.floor((600 * 1024 * 1024) / Math.max(1, bytesPerSnap))));
+
+      while (STATE.history.length > maxAllowed) {
         STATE.history.shift();
-      } else {
-        STATE.historyIndex++;
       }
+      STATE.historyIndex = STATE.history.length - 1;
 
       updateUndoRedoUI();
       STATE.isModified = true;
@@ -2045,8 +2685,10 @@
        ======================================================================== */
     function getCanvasCoords(e) {
       const rect = mainCanvas.getBoundingClientRect();
-      const x = Math.floor((e.clientX - rect.left) / STATE.zoom);
-      const y = Math.floor((e.clientY - rect.top) / STATE.zoom);
+      const scaleX = rect.width / mainCanvas.width;
+      const scaleY = rect.height / mainCanvas.height;
+      const x = Math.floor((e.clientX - rect.left) / (scaleX || STATE.zoom));
+      const y = Math.floor((e.clientY - rect.top) / (scaleY || STATE.zoom));
       return {
         x: Math.max(0, Math.min(mainCanvas.width - 1, x)),
         y: Math.max(0, Math.min(mainCanvas.height - 1, y))
@@ -2199,8 +2841,10 @@
           break;
 
         case 'fill':
-          floodFill(coords.x, coords.y, drawColor);
-          saveSnapshot();
+          const filledData = floodFill(coords.x, coords.y, drawColor);
+          if (filledData) {
+            saveSnapshot(filledData);
+          }
           STATE.isDrawing = false;
           break;
 
@@ -2558,61 +3202,210 @@
     }
 
     /* ========================================================================
-       High Performance Flood Fill (Bucket)
+       High Performance Flood Fill (Bucket) — Directional Shadow-Span Scanline
+       Zero visited array allocation, unsigned 32-bit SIMD fill, handles 10kx10k
        ======================================================================== */
     function floodFill(startX, startY, fillHex) {
       const w = mainCanvas.width;
       const h = mainCanvas.height;
-      if (startX < 0 || startX >= w || startY < 0 || startY >= h) return;
+      if (startX < 0 || startX >= w || startY < 0 || startY >= h) return null;
 
+      const t0 = performance.now();
       const imgData = mainCtx.getImageData(0, 0, w, h);
       const data = new Uint32Array(imgData.data.buffer);
 
       // Parse target fill color into 32-bit uint (ABGR format on little-endian)
       const fc = hexToRgba(fillHex);
-      const targetUint = (fc.a << 24) | (fc.b << 16) | (fc.g << 8) | fc.r;
+      const targetUint = (((fc.a & 0xFF) << 24) | ((fc.b & 0xFF) << 16) | ((fc.g & 0xFF) << 8) | (fc.r & 0xFF)) >>> 0;
 
       const startIdx = startY * w + startX;
-      const matchUint = data[startIdx];
+      const matchUint = data[startIdx] >>> 0;
 
-      if (matchUint === targetUint) return;
+      if (matchUint === targetUint) return null;
 
-      const stack = [startX, startY];
-      const visited = new Uint8Array(w * h);
+      // Directional Shadow-Span Scanline Stack (xl, xr, y, dy)
+      // Pre-allocated typed array grows dynamically if needed, avoiding GC churn and RangeError
+      let stack = new Int32Array(65536);
+      let stackPtr = 0;
 
-      while (stack.length > 0) {
-        const y = stack.pop();
-        const x = stack.pop();
-        const idx = y * w + x;
+      stack[stackPtr++] = startX;
+      stack[stackPtr++] = startX + 1;
+      stack[stackPtr++] = startY;
+      stack[stackPtr++] = 1;
 
-        if (visited[idx] || data[idx] !== matchUint) continue;
+      stack[stackPtr++] = startX;
+      stack[stackPtr++] = startX + 1;
+      stack[stackPtr++] = startY - 1;
+      stack[stackPtr++] = -1;
 
-        // Scan horizontally
-        let left = x;
-        while (left > 0 && data[y * w + left - 1] === matchUint && !visited[y * w + left - 1]) {
-          left--;
-        }
+      let filledPixels = 0;
 
-        let right = x;
-        while (right < w - 1 && data[y * w + right + 1] === matchUint && !visited[y * w + right + 1]) {
-          right++;
-        }
+      while (stackPtr > 0) {
+        const dy = stack[--stackPtr];
+        const y = stack[--stackPtr];
+        const xr = stack[--stackPtr];
+        let xl = stack[--stackPtr];
 
-        for (let i = left; i <= right; i++) {
-          const curIdx = y * w + i;
-          data[curIdx] = targetUint;
-          visited[curIdx] = 1;
+        if (y < 0 || y >= h) continue;
 
-          if (y > 0 && data[(y - 1) * w + i] === matchUint && !visited[(y - 1) * w + i]) {
-            stack.push(i, y - 1);
+        const rowOffset = y * w;
+        if (xl >= w || (data[rowOffset + xl] >>> 0) !== matchUint) {
+          // Find first matching pixel in [xl, xr]
+          let found = false;
+          for (let x = xl; x < xr && x < w; x++) {
+            if ((data[rowOffset + x] >>> 0) === matchUint) {
+              xl = x;
+              found = true;
+              break;
+            }
           }
-          if (y < h - 1 && data[(y + 1) * w + i] === matchUint && !visited[(y + 1) * w + i]) {
-            stack.push(i, y + 1);
+          if (!found) continue;
+        }
+
+        // Extend left
+        let l = xl;
+        while (l > 0 && (data[rowOffset + l - 1] >>> 0) === matchUint) {
+          l--;
+        }
+
+        // Extend right
+        let r = xl;
+        while (r < w && (data[rowOffset + r] >>> 0) === matchUint) {
+          r++;
+        }
+
+        // Fill horizontal segment at native memory speed
+        data.fill(targetUint, rowOffset + l, rowOffset + r);
+        filledPixels += (r - l);
+
+        // Push spans in the forward direction (dy)
+        const nextY = y + dy;
+        if (nextY >= 0 && nextY < h) {
+          const nextRow = nextY * w;
+          let inSpan = false;
+          let spanStart = l;
+          for (let x = l; x < r; x++) {
+            if ((data[nextRow + x] >>> 0) === matchUint) {
+              if (!inSpan) { inSpan = true; spanStart = x; }
+            } else {
+              if (inSpan) {
+                if (stackPtr + 4 > stack.length) {
+                  const n = new Int32Array(stack.length * 2);
+                  n.set(stack);
+                  stack = n;
+                }
+                stack[stackPtr++] = spanStart;
+                stack[stackPtr++] = x;
+                stack[stackPtr++] = nextY;
+                stack[stackPtr++] = dy;
+                inSpan = false;
+              }
+            }
+          }
+          if (inSpan) {
+            if (stackPtr + 4 > stack.length) {
+              const n = new Int32Array(stack.length * 2);
+              n.set(stack);
+              stack = n;
+            }
+            stack[stackPtr++] = spanStart;
+            stack[stackPtr++] = r;
+            stack[stackPtr++] = nextY;
+            stack[stackPtr++] = dy;
+          }
+        }
+
+        // Push spans in reverse direction (-dy) only if they extend beyond [xl, xr]
+        const prevY = y - dy;
+        if (prevY >= 0 && prevY < h) {
+          const prevRow = prevY * w;
+
+          // Check left extension [l, xl)
+          if (l < xl) {
+            let inSpan = false;
+            let spanStart = l;
+            for (let x = l; x < xl; x++) {
+              if ((data[prevRow + x] >>> 0) === matchUint) {
+                if (!inSpan) { inSpan = true; spanStart = x; }
+              } else {
+                if (inSpan) {
+                  if (stackPtr + 4 > stack.length) {
+                    const n = new Int32Array(stack.length * 2);
+                    n.set(stack);
+                    stack = n;
+                  }
+                  stack[stackPtr++] = spanStart;
+                  stack[stackPtr++] = x;
+                  stack[stackPtr++] = prevY;
+                  stack[stackPtr++] = -dy;
+                  inSpan = false;
+                }
+              }
+            }
+            if (inSpan) {
+              if (stackPtr + 4 > stack.length) {
+                const n = new Int32Array(stack.length * 2);
+                n.set(stack);
+                stack = n;
+              }
+              stack[stackPtr++] = spanStart;
+              stack[stackPtr++] = xl;
+              stack[stackPtr++] = prevY;
+              stack[stackPtr++] = -dy;
+            }
+          }
+
+          // Check right extension (xr, r]
+          if (r > xr) {
+            let inSpan = false;
+            let spanStart = xr;
+            for (let x = xr; x < r; x++) {
+              if ((data[prevRow + x] >>> 0) === matchUint) {
+                if (!inSpan) { inSpan = true; spanStart = x; }
+              } else {
+                if (inSpan) {
+                  if (stackPtr + 4 > stack.length) {
+                    const n = new Int32Array(stack.length * 2);
+                    n.set(stack);
+                    stack = n;
+                  }
+                  stack[stackPtr++] = spanStart;
+                  stack[stackPtr++] = x;
+                  stack[stackPtr++] = prevY;
+                  stack[stackPtr++] = -dy;
+                  inSpan = false;
+                }
+              }
+            }
+            if (inSpan) {
+              if (stackPtr + 4 > stack.length) {
+                const n = new Int32Array(stack.length * 2);
+                n.set(stack);
+                stack = n;
+              }
+              stack[stackPtr++] = spanStart;
+              stack[stackPtr++] = r;
+              stack[stackPtr++] = prevY;
+              stack[stackPtr++] = -dy;
+            }
           }
         }
       }
 
       mainCtx.putImageData(imgData, 0, 0);
+
+      const elapsed = Math.round((performance.now() - t0) * 10) / 10;
+      const mpxSec = (elapsed > 0) ? Math.round((filledPixels / 1000000 / (elapsed / 1000)) * 10) / 10 : 0;
+      WebGLRenderer.lastFillStats = {
+        px: filledPixels,
+        ms: elapsed,
+        mpxSec: mpxSec,
+        engine: WebGLRenderer.mode.toUpperCase()
+      };
+      WebGLRenderer.sync();
+      WebGLRenderer.updateTelemetryUI();
+
+      return imgData;
     }
 
     function hexToRgba(hex) {
@@ -3379,10 +4172,23 @@
     function resizeCanvas(newW, newH) {
       commitActiveShape();
       commitSelection();
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = mainCanvas.width;
-      tempCanvas.height = mainCanvas.height;
-      tempCanvas.getContext('2d').drawImage(mainCanvas, 0, 0);
+      newW = Math.max(1, Math.round(newW));
+      newH = Math.max(1, Math.round(newH));
+
+      const oldW = mainCanvas.width;
+      const oldH = mainCanvas.height;
+      const copyW = Math.min(oldW, newW);
+      const copyH = Math.min(oldH, newH);
+
+      // Copy previous contents directly via ImageData to avoid allocating an extra GPU-backed temporary <canvas>
+      let prevData = null;
+      if (copyW > 0 && copyH > 0) {
+        try {
+          prevData = mainCtx.getImageData(0, 0, copyW, copyH);
+        } catch(e) {
+          console.warn('Could not read existing canvas for resize:', e);
+        }
+      }
 
       mainCanvas.width = newW;
       mainCanvas.height = newH;
@@ -3390,8 +4196,11 @@
 
       mainCtx.fillStyle = STATE.color2;
       mainCtx.fillRect(0, 0, newW, newH);
-      mainCtx.drawImage(tempCanvas, 0, 0);
+      if (prevData) {
+        mainCtx.putImageData(prevData, 0, 0);
+      }
       saveSnapshot();
+      WebGLRenderer.updateTelemetryUI();
     }
 
     /* ========================================================================
@@ -3489,21 +4298,21 @@
     function setZoom(val, centerX, centerY) {
       const clamped = Math.max(0.25, Math.min(8.0, val));
       STATE.zoom = clamped;
-      mainCanvas.style.transform = `scale(${STATE.zoom})`;
-      mainCanvas.style.transformOrigin = '0 0';
-      overlayCanvas.style.transform = `scale(${STATE.zoom})`;
-      overlayCanvas.style.transformOrigin = '0 0';
 
       const pct = Math.round(STATE.zoom * 100);
       zoomPercentLabel.textContent = `${pct}%`;
       zoomSlider.value = pct;
 
       // Update container layout dimensions
-      canvasContainer.style.width = (mainCanvas.width * STATE.zoom) + 'px';
-      canvasContainer.style.height = (mainCanvas.height * STATE.zoom) + 'px';
+      if (canvasContainer) {
+        canvasContainer.style.width = Math.round(mainCanvas.width * STATE.zoom) + 'px';
+        canvasContainer.style.height = Math.round(mainCanvas.height * STATE.zoom) + 'px';
+      }
 
       // Update pixel grid overlay
       updateGridOverlay();
+      WebGLRenderer.render();
+      WebGLRenderer.updateTelemetryUI();
 
       // Center viewport around clicked pixel if provided
       if (centerX !== undefined && centerY !== undefined) {
@@ -3887,6 +4696,9 @@
        Modals
        ======================================================================== */
     function showModal(id) {
+      if (id === 'modalGpuSettings') {
+        WebGLRenderer.updateTelemetryUI();
+      }
       document.getElementById(id).style.display = 'flex';
     }
     function hideModal(id) {

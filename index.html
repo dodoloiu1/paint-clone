@@ -483,6 +483,8 @@
     .canvas-container {
       margin: auto;
       position: relative;
+      width: 960px;
+      height: 540px;
       background: white;
       box-shadow: var(--canvas-shadow);
       display: inline-block;
@@ -506,15 +508,24 @@
     }
 
     #mainCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
       background: #ffffff;
+      z-index: 2;
     }
 
     #overlayCanvas {
       position: absolute;
       top: 0;
       left: 0;
+      width: 100%;
+      height: 100%;
       background: transparent !important;
       pointer-events: none;
+      z-index: 6;
     }
 
     /* Canvas Resize Handles */
@@ -1557,29 +1568,42 @@
       canvasSizeText.textContent = `${mainCanvas.width} × ${mainCanvas.height} px`;
       overlayCanvas.width = mainCanvas.width;
       overlayCanvas.height = mainCanvas.height;
+
+      // Update container layout dimensions
+      if (canvasContainer) {
+        canvasContainer.style.width = Math.round(mainCanvas.width * STATE.zoom) + 'px';
+        canvasContainer.style.height = Math.round(mainCanvas.height * STATE.zoom) + 'px';
+      }
+
+      // Re-assert smoothing settings after canvas resize
+      mainCtx.imageSmoothingEnabled = false;
+      overlayCtx.imageSmoothingEnabled = false;
     }
 
     /* ========================================================================
        History Stack (Undo / Redo)
        ======================================================================== */
-    function saveSnapshot() {
+    function saveSnapshot(existingImgData = null) {
       // Truncate any redo steps
       if (STATE.historyIndex < STATE.history.length - 1) {
         STATE.history = STATE.history.slice(0, STATE.historyIndex + 1);
       }
 
-      const imgData = mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
+      const imgData = existingImgData || mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
       STATE.history.push({
         width: mainCanvas.width,
         height: mainCanvas.height,
         data: imgData
       });
 
-      if (STATE.history.length > STATE.maxHistory) {
+      // Adaptive history length to prevent RAM exhaustion on large canvases (e.g. 10000x10000 = 400MB/snap)
+      const bytesPerSnap = mainCanvas.width * mainCanvas.height * 4;
+      const maxAllowed = Math.max(2, Math.min(STATE.maxHistory, Math.floor((600 * 1024 * 1024) / Math.max(1, bytesPerSnap))));
+
+      while (STATE.history.length > maxAllowed) {
         STATE.history.shift();
-      } else {
-        STATE.historyIndex++;
       }
+      STATE.historyIndex = STATE.history.length - 1;
 
       updateUndoRedoUI();
       STATE.isModified = true;
@@ -1669,8 +1693,10 @@
        ======================================================================== */
     function getCanvasCoords(e) {
       const rect = mainCanvas.getBoundingClientRect();
-      const x = Math.floor((e.clientX - rect.left) / STATE.zoom);
-      const y = Math.floor((e.clientY - rect.top) / STATE.zoom);
+      const scaleX = rect.width / mainCanvas.width;
+      const scaleY = rect.height / mainCanvas.height;
+      const x = Math.floor((e.clientX - rect.left) / (scaleX || STATE.zoom));
+      const y = Math.floor((e.clientY - rect.top) / (scaleY || STATE.zoom));
       return {
         x: Math.max(0, Math.min(mainCanvas.width - 1, x)),
         y: Math.max(0, Math.min(mainCanvas.height - 1, y))
@@ -1823,8 +1849,10 @@
           break;
 
         case 'fill':
-          floodFill(coords.x, coords.y, drawColor);
-          saveSnapshot();
+          const filledData = floodFill(coords.x, coords.y, drawColor);
+          if (filledData) {
+            saveSnapshot(filledData);
+          }
           STATE.isDrawing = false;
           break;
 
@@ -2182,61 +2210,192 @@
     }
 
     /* ========================================================================
-       High Performance Flood Fill (Bucket)
+       High Performance Flood Fill (Bucket) — Directional Shadow-Span Scanline
+       Zero visited array allocation, unsigned 32-bit SIMD fill, handles 10kx10k
        ======================================================================== */
     function floodFill(startX, startY, fillHex) {
       const w = mainCanvas.width;
       const h = mainCanvas.height;
-      if (startX < 0 || startX >= w || startY < 0 || startY >= h) return;
+      if (startX < 0 || startX >= w || startY < 0 || startY >= h) return null;
 
       const imgData = mainCtx.getImageData(0, 0, w, h);
       const data = new Uint32Array(imgData.data.buffer);
 
       // Parse target fill color into 32-bit uint (ABGR format on little-endian)
       const fc = hexToRgba(fillHex);
-      const targetUint = (fc.a << 24) | (fc.b << 16) | (fc.g << 8) | fc.r;
+      const targetUint = (((fc.a & 0xFF) << 24) | ((fc.b & 0xFF) << 16) | ((fc.g & 0xFF) << 8) | (fc.r & 0xFF)) >>> 0;
 
       const startIdx = startY * w + startX;
-      const matchUint = data[startIdx];
+      const matchUint = data[startIdx] >>> 0;
 
-      if (matchUint === targetUint) return;
+      if (matchUint === targetUint) return null;
 
-      const stack = [startX, startY];
-      const visited = new Uint8Array(w * h);
+      // Directional Shadow-Span Scanline Stack (xl, xr, y, dy)
+      let stack = new Int32Array(65536);
+      let stackPtr = 0;
 
-      while (stack.length > 0) {
-        const y = stack.pop();
-        const x = stack.pop();
-        const idx = y * w + x;
+      stack[stackPtr++] = startX;
+      stack[stackPtr++] = startX + 1;
+      stack[stackPtr++] = startY;
+      stack[stackPtr++] = 1;
 
-        if (visited[idx] || data[idx] !== matchUint) continue;
+      stack[stackPtr++] = startX;
+      stack[stackPtr++] = startX + 1;
+      stack[stackPtr++] = startY - 1;
+      stack[stackPtr++] = -1;
 
-        // Scan horizontally
-        let left = x;
-        while (left > 0 && data[y * w + left - 1] === matchUint && !visited[y * w + left - 1]) {
-          left--;
-        }
+      while (stackPtr > 0) {
+        const dy = stack[--stackPtr];
+        const y = stack[--stackPtr];
+        const xr = stack[--stackPtr];
+        let xl = stack[--stackPtr];
 
-        let right = x;
-        while (right < w - 1 && data[y * w + right + 1] === matchUint && !visited[y * w + right + 1]) {
-          right++;
-        }
+        if (y < 0 || y >= h) continue;
 
-        for (let i = left; i <= right; i++) {
-          const curIdx = y * w + i;
-          data[curIdx] = targetUint;
-          visited[curIdx] = 1;
-
-          if (y > 0 && data[(y - 1) * w + i] === matchUint && !visited[(y - 1) * w + i]) {
-            stack.push(i, y - 1);
+        const rowOffset = y * w;
+        if (xl >= w || (data[rowOffset + xl] >>> 0) !== matchUint) {
+          let found = false;
+          for (let x = xl; x < xr && x < w; x++) {
+            if ((data[rowOffset + x] >>> 0) === matchUint) {
+              xl = x;
+              found = true;
+              break;
+            }
           }
-          if (y < h - 1 && data[(y + 1) * w + i] === matchUint && !visited[(y + 1) * w + i]) {
-            stack.push(i, y + 1);
+          if (!found) continue;
+        }
+
+        // Extend left
+        let l = xl;
+        while (l > 0 && (data[rowOffset + l - 1] >>> 0) === matchUint) {
+          l--;
+        }
+
+        // Extend right
+        let r = xl;
+        while (r < w && (data[rowOffset + r] >>> 0) === matchUint) {
+          r++;
+        }
+
+        // Fill horizontal segment at native memory speed
+        data.fill(targetUint, rowOffset + l, rowOffset + r);
+
+        // Push spans in the forward direction (dy)
+        const nextY = y + dy;
+        if (nextY >= 0 && nextY < h) {
+          const nextRow = nextY * w;
+          let inSpan = false;
+          let spanStart = l;
+          for (let x = l; x < r; x++) {
+            if ((data[nextRow + x] >>> 0) === matchUint) {
+              if (!inSpan) { inSpan = true; spanStart = x; }
+            } else {
+              if (inSpan) {
+                if (stackPtr + 4 > stack.length) {
+                  const n = new Int32Array(stack.length * 2);
+                  n.set(stack);
+                  stack = n;
+                }
+                stack[stackPtr++] = spanStart;
+                stack[stackPtr++] = x;
+                stack[stackPtr++] = nextY;
+                stack[stackPtr++] = dy;
+                inSpan = false;
+              }
+            }
+          }
+          if (inSpan) {
+            if (stackPtr + 4 > stack.length) {
+              const n = new Int32Array(stack.length * 2);
+              n.set(stack);
+              stack = n;
+            }
+            stack[stackPtr++] = spanStart;
+            stack[stackPtr++] = r;
+            stack[stackPtr++] = nextY;
+            stack[stackPtr++] = dy;
+          }
+        }
+
+        // Push spans in reverse direction (-dy) only if they extend beyond [xl, xr]
+        const prevY = y - dy;
+        if (prevY >= 0 && prevY < h) {
+          const prevRow = prevY * w;
+
+          // Check left extension [l, xl)
+          if (l < xl) {
+            let inSpan = false;
+            let spanStart = l;
+            for (let x = l; x < xl; x++) {
+              if ((data[prevRow + x] >>> 0) === matchUint) {
+                if (!inSpan) { inSpan = true; spanStart = x; }
+              } else {
+                if (inSpan) {
+                  if (stackPtr + 4 > stack.length) {
+                    const n = new Int32Array(stack.length * 2);
+                    n.set(stack);
+                    stack = n;
+                  }
+                  stack[stackPtr++] = spanStart;
+                  stack[stackPtr++] = x;
+                  stack[stackPtr++] = prevY;
+                  stack[stackPtr++] = -dy;
+                  inSpan = false;
+                }
+              }
+            }
+            if (inSpan) {
+              if (stackPtr + 4 > stack.length) {
+                const n = new Int32Array(stack.length * 2);
+                n.set(stack);
+                stack = n;
+              }
+              stack[stackPtr++] = spanStart;
+              stack[stackPtr++] = xl;
+              stack[stackPtr++] = prevY;
+              stack[stackPtr++] = -dy;
+            }
+          }
+
+          // Check right extension (xr, r]
+          if (r > xr) {
+            let inSpan = false;
+            let spanStart = xr;
+            for (let x = xr; x < r; x++) {
+              if ((data[prevRow + x] >>> 0) === matchUint) {
+                if (!inSpan) { inSpan = true; spanStart = x; }
+              } else {
+                if (inSpan) {
+                  if (stackPtr + 4 > stack.length) {
+                    const n = new Int32Array(stack.length * 2);
+                    n.set(stack);
+                    stack = n;
+                  }
+                  stack[stackPtr++] = spanStart;
+                  stack[stackPtr++] = x;
+                  stack[stackPtr++] = prevY;
+                  stack[stackPtr++] = -dy;
+                  inSpan = false;
+                }
+              }
+            }
+            if (inSpan) {
+              if (stackPtr + 4 > stack.length) {
+                const n = new Int32Array(stack.length * 2);
+                n.set(stack);
+                stack = n;
+              }
+              stack[stackPtr++] = spanStart;
+              stack[stackPtr++] = r;
+              stack[stackPtr++] = prevY;
+              stack[stackPtr++] = -dy;
+            }
           }
         }
       }
 
       mainCtx.putImageData(imgData, 0, 0);
+      return imgData;
     }
 
     function hexToRgba(hex) {
@@ -2998,10 +3157,23 @@
     function resizeCanvas(newW, newH) {
       commitActiveShape();
       commitSelection();
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = mainCanvas.width;
-      tempCanvas.height = mainCanvas.height;
-      tempCanvas.getContext('2d').drawImage(mainCanvas, 0, 0);
+      newW = Math.max(1, Math.round(newW));
+      newH = Math.max(1, Math.round(newH));
+
+      const oldW = mainCanvas.width;
+      const oldH = mainCanvas.height;
+      const copyW = Math.min(oldW, newW);
+      const copyH = Math.min(oldH, newH);
+
+      // Copy previous contents directly via ImageData to avoid allocating an extra GPU-backed temporary <canvas>
+      let prevData = null;
+      if (copyW > 0 && copyH > 0) {
+        try {
+          prevData = mainCtx.getImageData(0, 0, copyW, copyH);
+        } catch(e) {
+          console.warn('Could not read existing canvas for resize:', e);
+        }
+      }
 
       mainCanvas.width = newW;
       mainCanvas.height = newH;
@@ -3009,7 +3181,9 @@
 
       mainCtx.fillStyle = STATE.color2;
       mainCtx.fillRect(0, 0, newW, newH);
-      mainCtx.drawImage(tempCanvas, 0, 0);
+      if (prevData) {
+        mainCtx.putImageData(prevData, 0, 0);
+      }
       saveSnapshot();
     }
 
@@ -3108,18 +3282,16 @@
     function setZoom(val, centerX, centerY) {
       const clamped = Math.max(0.25, Math.min(8.0, val));
       STATE.zoom = clamped;
-      mainCanvas.style.transform = `scale(${STATE.zoom})`;
-      mainCanvas.style.transformOrigin = '0 0';
-      overlayCanvas.style.transform = `scale(${STATE.zoom})`;
-      overlayCanvas.style.transformOrigin = '0 0';
 
       const pct = Math.round(STATE.zoom * 100);
       zoomPercentLabel.textContent = `${pct}%`;
       zoomSlider.value = pct;
 
       // Update container layout dimensions
-      canvasContainer.style.width = (mainCanvas.width * STATE.zoom) + 'px';
-      canvasContainer.style.height = (mainCanvas.height * STATE.zoom) + 'px';
+      if (canvasContainer) {
+        canvasContainer.style.width = Math.round(mainCanvas.width * STATE.zoom) + 'px';
+        canvasContainer.style.height = Math.round(mainCanvas.height * STATE.zoom) + 'px';
+      }
 
       // Update pixel grid overlay
       updateGridOverlay();
